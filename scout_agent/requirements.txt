@@ -1,0 +1,4 @@
+pyrogram>=2.0.0
+tgcrypto
+httpx>=0.20.0
+apscheduler>=3.6.3

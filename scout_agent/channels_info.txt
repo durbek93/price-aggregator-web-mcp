@@ -1,0 +1,10 @@
+ID: -1003861704035 | Username: biotek_fergana | Title: BIOTEK FARM_ fergana 🚚
+ID: -1001367609205 | Username: merospharmglobal | Title: MEROS PHARM
+ID: -1001180237503 | Username: grandpharmtradeMuslima | Title: GRAND PHARM TRADE
+ID: -1001350516653 | Username: asklepiydistribution | Title: "ASKLEPIY Distribution" UZBEKISTAN
+ID: -1002393225789 | Username: drugpromotionuzb | Title: Прайс DRUG PROMOTION ОПТОВАЯ ТОРГОВЛЯ
+ID: -1001125291895 | Username: PharmaChoiceToshkent | Title: Pharma Choice
+ID: -1003803711198 | Username: Shayxontohur_Olmazor | Title: ZENTA PHARM® 💊SHAYXONTOHUR & OLMAZOR
+ID: -1001449146322 | Username: delpharmprays | Title: DELPHARM
+ID: -1001666009826 | Username: AEROPHARMVera | Title: AERO
+ID: vaksinabot | Username: vaksinabot | Title: None

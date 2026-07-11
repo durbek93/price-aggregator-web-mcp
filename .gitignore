@@ -1,0 +1,51 @@
+# Environments
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+.pytest_cache/
+
+# Project Directories & Data
+backend/data/uploads/*
+backend/data/outputs/*
+backend/data/history/*
+!backend/data/uploads/.gitkeep
+!backend/data/outputs/.gitkeep
+
+# Scout Agent / Telegram Session files
+scout_agent/downloads/
+scout_agent/*.session
+scout_agent/*.session-journal
+scout_agent/*_temp.session
+
+# Frontend dependencies and builds
+frontend/node_modules/
+frontend/dist/
+frontend/.svelte-kit/
+frontend/.next/
+frontend/build/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.code-workspace
+*.swp
+*.swo
+
+# OS Files
+.DS_Store
+Thumbs.db
+desktop.ini

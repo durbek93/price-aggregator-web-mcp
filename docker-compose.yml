@@ -1,0 +1,164 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: price_aggregator_db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_secure_password
+      POSTGRES_DB: price_aggregator
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: price_aggregator_pgadmin
+    restart: always
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin_secure_password_123
+    ports:
+      - "5050:80"
+    depends_on:
+      - db
+
+  redis:
+    image: redis:7-alpine
+    container_name: price_aggregator_redis
+    restart: always
+    ports:
+      - "6379:6379"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: price_aggregator_backend
+    restart: always
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres_secure_password@db:5432/price_aggregator
+      - REDIS_URL=redis://redis:6379/0
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - ALLOWED_TELEGRAM_IDS=${ALLOWED_TELEGRAM_IDS}
+      - FRONTEND_URL=${FRONTEND_URL}
+      - JWT_SECRET=${JWT_SECRET:-super_secret_jwt_key_12345}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+      - TELEGRAM_GROUP_ID=${TELEGRAM_GROUP_ID}
+      - UPLOAD_DIR=/app/data/uploads
+      - OUTPUT_DIR=/app/data/outputs
+    volumes:
+      - ./backend:/app
+      - ./backend/data:/app/data
+    depends_on:
+      - db
+      - redis
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: price_aggregator_worker
+    restart: always
+    command: celery -A app.worker.celery_app worker --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres_secure_password@db:5432/price_aggregator
+      - REDIS_URL=redis://redis:6379/0
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - ALLOWED_TELEGRAM_IDS=${ALLOWED_TELEGRAM_IDS}
+      - FRONTEND_URL=${FRONTEND_URL}
+      - JWT_SECRET=${JWT_SECRET:-super_secret_jwt_key_12345}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+      - TELEGRAM_GROUP_ID=${TELEGRAM_GROUP_ID}
+      - UPLOAD_DIR=/app/data/uploads
+      - OUTPUT_DIR=/app/data/outputs
+    volumes:
+      - ./backend:/app
+      - ./backend/data:/app/data
+    depends_on:
+      - db
+      - redis
+
+  bot:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: price_aggregator_bot
+    restart: always
+    command: python -m app.bot.main
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres_secure_password@db:5432/price_aggregator
+      - REDIS_URL=redis://redis:6379/0
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - ALLOWED_TELEGRAM_IDS=${ALLOWED_TELEGRAM_IDS}
+      - FRONTEND_URL=${FRONTEND_URL}
+      - JWT_SECRET=${JWT_SECRET:-super_secret_jwt_key_12345}
+      - UPLOAD_DIR=/app/data/uploads
+      - OUTPUT_DIR=/app/data/outputs
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+    volumes:
+      - ./backend:/app
+      - ./backend/data:/app/data
+    depends_on:
+      - db
+      - redis
+
+  frontend:
+    image: node:20-alpine
+    container_name: price_aggregator_frontend
+    restart: always
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+    ports:
+      - "5173:5173"
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+
+  scout_agent:
+    build:
+      context: ./scout_agent
+      dockerfile: Dockerfile
+    container_name: price_aggregator_scout
+    restart: always
+    volumes:
+      - ./scout_agent:/app
+    environment:
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+      - TELEGRAM_PHONE=${TELEGRAM_PHONE}
+      - TELEGRAM_PASSWORD=${TELEGRAM_PASSWORD}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+      - BACKEND_URL=http://backend:8000
+      - DISTRIBUTOR_CHANNELS=${DISTRIBUTOR_CHANNELS}
+      - DEMAND_BOT_USERNAME=${DEMAND_BOT_USERNAME}
+    depends_on:
+      - backend
+
+  analyst_agent:
+    build:
+      context: ./analyst_agent
+      dockerfile: Dockerfile
+    container_name: price_aggregator_analyst
+    restart: always
+    environment:
+      - ANALYST_BOT_TOKEN=${ANALYST_BOT_TOKEN}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+      - BACKEND_URL=http://backend:8000
+      - TELEGRAM_GROUP_ID=${TELEGRAM_GROUP_ID}
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

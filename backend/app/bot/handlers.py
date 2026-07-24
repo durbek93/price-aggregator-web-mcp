@@ -228,6 +228,7 @@ async def handle_bot_mention_in_group(message: Message) -> None:
     text = message.text or ""
     is_trigger = (
         "@lightprice_aggr_bot" in text.lower() or 
+        "агрегатор" in text.lower() or 
         "сборщик" in text.lower() or 
         "сборка" in text.lower() or 
         text.strip().lower().startswith(("/collect", "/collect@lightprice_aggr_bot"))

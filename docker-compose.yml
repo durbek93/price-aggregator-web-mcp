@@ -157,6 +157,8 @@ services:
       - INTERNAL_API_KEY=${INTERNAL_API_KEY}
       - BACKEND_URL=http://backend:8000
       - TELEGRAM_GROUP_ID=${TELEGRAM_GROUP_ID}
+    volumes:
+      - ./analyst_agent:/app
     depends_on:
       - backend
 

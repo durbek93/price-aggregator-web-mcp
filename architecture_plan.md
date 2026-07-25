@@ -1,119 +1,157 @@
-# Архитектурный план: Веб-версия и Telegram-бот для Price Aggregator
+# Архитектурный план: Экосистема Price Aggregator (Web & Telegram ИИ-Агенты)
 
-На основе проведенного интервью мы разрабатываем независимое многопользовательское веб-приложение с интеграцией в Telegram-бот. Проект будет полностью отделен от оригинального десктопного приложения, но унаследует и адаптирует его бизнес-логику.
+Данный документ описывает современную архитектуру системы **Price Aggregator Web & Telegram Ecosystem** — независимой многопользовательской веб-панели и мульти-агентной Telegram-системы для автоматизации сбора, сопоставления и анализа фармацевтических прайс-листов рынка Узбекистана.
 
 ---
 
 ## 🛠 Технологический стек
 
-* **Бэкенд**: Python + **FastAPI** (асинхронный REST API).
-* **Фронтенд**: **React** (Vite) + **Vanilla CSS** (премиальный адаптивный дизайн с поддержкой темной темы и эффектов стекла/glassmorphism).
-* **СУБД**: **PostgreSQL** (хранение настроек, пользователей, каталогов и метаданных файлов).
-* **Брокер сообщений и очередь задач**: **Redis** + **Celery** (для фоновой обработки Excel).
-* **Telegram-бот**: **aiogram (v3.x)** (асинхронный бот на вебхуках или polling).
-* **ОРМ**: **SQLAlchemy (v2.0)** + миграции **Alembic**.
-* **Развертывание**: **Docker Compose** (изолированные контейнеры для всех сервисов).
+* **Бэкенд & Core Engine**: Python + **FastAPI** (асинхронный REST API + Internal API для агентов).
+* **Фронтенд**: **React** (Vite) + **Vanilla CSS** (премиальный стеклянный дизайн Glassmorphism с поддержкой тёмной темы).
+* **СУБД**: **PostgreSQL** (пользователи, каталоги синонимов, настройки нормализации, история файлов и задач).
+* **Брокер сообщений и очередь задач**: **Redis** + **Celery** (фоновый нечеткий матчинг и сборка матриц Excel).
+* **Telegram-Инфраструктура (3 Агента/Сервиса)**:
+  1. **Scout Agent**: Pyrogram (Userbot / Telegram Client API).
+  2. **Aggregator Bot**: aiogram v3 (Telegram Bot API — технический бот `@lightprice_aggr_bot`).
+  3. **Analyst Agent**: aiogram v3 + **Google Gemini 2.5 Flash** (Telegram Bot API — ИИ-Аналитик).
+* **ОРМ & Миграции**: **SQLAlchemy v2.0** + **Alembic**.
+* **Развертывание**: **Docker Compose** (изолированные микросервисы).
 
 ---
 
-## 📂 Планируемая структура проекта
+## 🤖 Архитектура ИИ-Агентов и Сервисов Telegram
 
-Новый проект будет размещен в директории `[price-aggregator-web](file:///home/ubuntu/price-aggregator-web)` со следующей структурой:
+Экосистема включает в себя 3 четко разграниченных компонента для работы с Telegram:
+
+```mermaid
+flowchart TD
+    subgraph Telegram Infrastructure
+        A[TG Channels & Chats] -->|1. Скачивание .xlsx| B[Scout Agent (Pyrogram Userbot)]
+        U[Пользователь в TG Чате] -->|2. Команды /collect, статусы| C[Aggregator Bot (@lightprice_aggr_bot)]
+        U -->|3. Вопросы: анализ цен, дефицит, КРКА| D[Analyst Agent (Gemini 2.5 Flash)]
+    end
+
+    subgraph Core System
+        B -->|HTTP POST /api/files/upload| E[Backend FastAPI]
+        C -->|Trigger /collect| B
+        D -->|HTTP GET /api/analysis| E
+        D -->|Генерация отчетов| G[Gemini API]
+        E <--> F[(PostgreSQL)]
+        E <--> H[(Redis / Celery)]
+    end
+```
+
+### 1. 🕵️‍♂️ Scout Agent (`scout_agent/`)
+* **Технология**: Pyrogram (Telegram Userbot / Client API).
+* **Контейнер**: `price_aggregator_scout`
+* **Назначение**: Фоновый сборщик. Мониторит каналы и чаты дистрибьюторов в Telegram (Гранд Фарм, Мерос, Фарм Люкс, Асклепий, Зента, Аэро и др.), автоматически скачивает поступающие Excel-файлы и передает их в Backend API.
+
+### 2. 🤖 Aggregator Bot (`backend/app/bot/`)
+* **Технология**: aiogram v3.
+* **Контейнер**: `price_aggregator_bot` (username `@lightprice_aggr_bot`).
+* **Назначение**: Главный технический и управляющий бот. 
+  * Принимает ручные файлы от администраторов;
+  * Генерирует одноразовые ссылки для входа на веб-панель (Magic Links);
+  * Обрабатывает команды управления и триггеры (`/collect`, *"агрегатор"*, *"сборка"*, *"статус систем"*);
+  * Инициирует принудительный сбор прайсов через Scout Agent.
+
+### 3. 📊 Analyst Agent (`analyst_agent/`)
+* **Технология**: aiogram v3 + **Google Gemini 2.5 Flash**.
+* **Контейнер**: `price_aggregator_analyst`
+* **Назначение**: Интеллектуальный ИИ-аналитик рынка.
+  * Классифицирует произвольные текстовые запросы пользователей из чата;
+  * Формирует аналитические сводки по дефицитным препаратам, конкретным производителям (например, *«анализ цен КРКА за 3 дня»*) и отдельным препаратам (*«динамика по Виферон»*);
+  * Публикует еженедельные аналитические отчеты после сборки сводного прайса.
+
+---
+
+## 📂 Структура проекта
 
 ```text
 price-aggregator-web/
-├── docker-compose.yml           # Оркестрация всех контейнеров (db, redis, backend, bot, worker, frontend)
+├── docker-compose.yml           # Оркестрация контейнеров (db, redis, backend, bot, scout_agent, analyst_agent, frontend)
 ├── .env.example                 # Шаблон переменных окружения
-├── backend/                     # Код бэкенда и Telegram-бота
+├── README.md                    # Основное руководство пользователя и документация
+├── architecture_plan.md         # Описание архитектурных решений (Этот файл)
+│
+├── backend/                     # Бэкенд на FastAPI и Бот-Агрегатор
 │   ├── Dockerfile
-│   ├── requirements.txt         # Зависимости (fastapi, aiogram, celery, sqlalchemy, pandas, openpyxl, etc.)
-│   ├── alembic.ini              # Настройки миграций БД
+│   ├── requirements.txt
 │   ├── app/
-│   │   ├── __init__.py
-│   │   ├── main.py              # Точка входа FastAPI
-│   │   ├── config.py            # Настройки приложения (env, пути)
+│   │   ├── main.py              # Точка входа FastAPI REST API
+│   │   ├── config.py            # Конфигурация и переменные окружения
 │   │   ├── database.py          # Инициализация SQLAlchemy
-│   │   ├── models/              # Таблицы базы данных
-│   │   │   ├── user.py          # Пользователи (Telegram ID, Web сессии)
-│   │   │   ├── settings.py      # Настройки (колонки, производители)
-│   │   │   ├── catalog.py       # Препараты и синонимы
-│   │   │   └── file.py          # История загрузок и отчетов
-│   │   ├── schemas/             # Схемы Pydantic для API
-│   │   ├── api/                 # Эндпоинты REST API (auth, settings, files, catalog)
-│   │   ├── bot/                 # Код Telegram-бота на aiogram
-│   │   │   ├── handlers/        # Обработчики сообщений и файлов
-│   │   │   ├── keyboards/       # Кнопки и инлайн-клавиатуры
-│   │   │   └── loader.py        # Инициализация бота и диспетчера
-│   │   ├── worker.py            # Настройка Celery app
-│   │   ├── tasks.py             # Фоновые задачи Celery (вызов логики парсинга)
-│   │   └── core/                # Адаптированная логика парсинга (из оригинального проекта)
-│   │       ├── price_utils.py   # Утилиты нормализации
-│   │       ├── svodny_price.py  # Сборка матрицы
-│   │       ├── assortment.py    # Подсчет ассортимента
-│   │       └── suppliers.py     # Анализ лучших поставщиков
+│   │   ├── models/              # Таблицы БД (User, Settings, Catalog, FileRecord, TaskRecord)
+│   │   ├── api/                 # REST API (auth, files, settings, catalog, tasks, analysis)
+│   │   ├── bot/                 # Бот-Агрегатор (aiogram v3)
+│   │   │   ├── handlers/        # Обработчики технического бота (@lightprice_aggr_bot)
+│   │   │   └── main.py          # Точка входа контейнера price_aggregator_bot
+│   │   └── core/                # Ядро алгоритмов нечеткого сопоставления и сборки матриц
+│   │       ├── price_utils.py   # Нормализация наименований и цен
+│   │       ├── grouping.py      # Алгоритм сопоставления препаратов (Union-Find + Левенштейн)
+│   │       ├── matrix_builder.py# Формирование матриц цен
+│   │       └── report_formatter.py # Генерация стилизованных .xlsx файлов
 │   └── migrations/              # Автогенерация миграций Alembic
 │
-└── frontend/                    # SPA-приложение на React
+├── scout_agent/                 # Telegram-парсер дистрибьюторских каналов
+│   ├── Dockerfile
+│   ├── main.py                  # Pyrogram клиент
+│   └── api_client.py            # Отправка скачанных прайсов в backend API
+│
+├── analyst_agent/               # ИИ-Аналитик (aiogram + Gemini API)
+│   ├── Dockerfile
+│   ├── main.py                  # Обработка запросов из чата и классификация intents
+│   ├── gemini_service.py        # Взаимодействие с Google Gemini 2.5 Flash
+│   └── backend_client.py        # Получение аналитических данных с бэкенда
+│
+└── frontend/                    # SPA-приложение на React (Vite)
     ├── Dockerfile
     ├── package.json
-    ├── vite.config.js
-    ├── index.html
-    └── src/
-        ├── main.jsx
-        ├── App.jsx
-        ├── index.css            # Премиальный дизайн-система (CSS-переменные)
-        ├── components/          # Компоненты UI (таблицы, кнопки, загрузчики)
-        └── pages/               # Страницы (Дашборд, Каталог, Настройки, История)
+    └── src/                     # Компоненты панели управления, история отчетов и настройки
 ```
 
 ---
 
 ## 🗄 Схема базы данных (Концепт)
 
-Для реализации многопользовательского режима (multi-tenancy) все сущности будут связаны с таблицей `users`.
-
 ```mermaid
 erDiagram
     users {
         int id PK
-        int telegram_id UK "Уникальный ID пользователя в Telegram"
+        int telegram_id UK "ID пользователя в Telegram"
         string username
         string first_name
         datetime created_at
     }
     settings {
         int id PK
-        int user_id FK "Связь 1-к-1 с users"
+        int user_id FK
         jsonb columns "Кандидаты названий колонок"
         string array producers "Список брендов/производителей"
         boolean use_catalog_matching
-        boolean legacy_priority_rules
     }
     catalog {
         int id PK
-        int user_id FK "Связь 1-к-many с users"
+        int user_id FK
         string canonical "Каноническое название препарата"
-        string array aliases "Список синонимов"
+        string array aliases "Синонимы"
     }
     files {
         int id PK
-        int user_id FK "Связь 1-к-many с users"
-        string filename "Имя файла на диске"
-        string display_name "Отображаемое имя"
-        string file_type "input (прайс) или output (отчет)"
-        string read_preset "khoji_akbar / grand_farm / auto"
+        int user_id FK
+        string filename
+        string display_name
+        string file_type "input или output"
         int file_size
-        string storage_path "Путь на сервере"
+        string storage_path
         datetime uploaded_at
     }
     tasks {
         int id PK
-        int user_id FK "Связь 1-к-many с users"
+        int user_id FK
         string celery_task_id UK
-        string task_type "svodny / assortment / cheapest / best_suppliers"
+        string task_type
         string status "pending / running / completed / failed"
-        string progress_message
-        string result_file_path
         datetime created_at
     }
 
@@ -125,49 +163,18 @@ erDiagram
 
 ---
 
-## 🔄 Схема взаимодействия и авторизации
+## 🔄 Схемы главных пользовательских сценариев
 
-1. **Авторизация по ссылке (Magic Link)**:
-   * Пользователь заходит в Telegram-бот и пишет `/start`.
-   * Бот сохраняет пользователя в БД `users` (если его нет).
-   * Бот генерирует одноразовый JWT-токен входа и выдает ссылку вида: `https://our-site.com/auth?token=JWT_TOKEN`.
-   * Пользователь переходит по ссылке. Браузер сохраняет токен, и пользователь авторизован на сайте под своей учетной записью.
-   
-2. **Telegram Mini App (Альтернатива)**:
-   * Пользователь запускает WebApp внутри Telegram-бота.
-   * Фронтенд React открывается внутри Telegram, валидирует `initData` от Telegram на бэкенде FastAPI и автоматически авторизует пользователя.
+1. **Автоматический сбор и подготовка сводного прайса**:
+   - `Scout Agent` скачивает Excel-файл дистрибьютора из Telegram-канала -> передаёт в `/api/files/upload`.
+   - Файл регистрируется в БД, старые версии с тем же именем уходят в soft-archive `history`.
+   - Пользователь или `Aggregator Bot` запускает процесс сборки -> `Celery` производит нечеткий матчинг по каталогу синонимов (`grouping.py`) -> генерирует результирующий `.xlsx`.
 
-3. **Фоновая обработка файлов**:
-   * Пользователь отправляет Excel-файлы в бот или загружает через сайт.
-   * Файлы сохраняются в `/data/inputs/<user_id>/`.
-   * Пользователь нажимает "Собрать сводный прайс".
-   * FastAPI ставит задачу в Celery: `run_pipeline_task.delay(user_id, task_type)`.
-   * Бэкенд возвращает `task_id`. Фронтенд (или бот) периодически опрашивает статус задачи.
-   * Celery-воркер считывает файлы, производит сопоставление через адаптированную логику [svodny_price.py](file:///home/ubuntu/price-aggregator/svodny_price.py).
-   * По завершении Celery-воркер генерирует Excel-файл в `/data/outputs/<user_id>/`, обновляет статус в БД, и Telegram-бот отправляет готовый файл в чат пользователю (или выводит кнопку скачать на сайте).
+2. **Запрос ИИ-аналитики в чате**:
+   - Пользователь пишет в групповой чат: *"Агрегатор, сделай анализ цен КРКА за 3 дня"*.
+   - `Analyst Agent` распознает запрос с помощью `gemini_service.py` (intent: `manufacturer`, target: `КРКА`, days: `3`).
+   - `Analyst Agent` запрашивает бэкенд `/api/analysis/manufacturer` -> отправляет полученную дельту цен в Gemini 2.5 Flash -> публикует форматированный HTML-отчет в чат.
 
----
-
-## 🚀 Этапы реализации
-
-* [ ] **Этап 1: Инициализация проекта и Docker**
-  * Создание структуры каталогов, настройка `docker-compose.yml` (PostgreSQL, Redis, FastAPI, Celery, React/Vite).
-  * Настройка подключения к БД SQLAlchemy + Alembic, генерация стартовых миграций.
-* [ ] **Этап 2: Адаптация ядра обработки (Core Engine)**
-  * Перенос логики из [svodny_price.py](file:///home/ubuntu/price-aggregator/svodny_price.py), [cheapest_svodny_prices.py](file:///home/ubuntu/price-aggregator/cheapest_svodny_prices.py), [assortment_prices.py](file:///home/ubuntu/price-aggregator/assortment_prices.py), [best_suppliers_analysis.py](file:///home/ubuntu/price-aggregator/best_suppliers_analysis.py) и [price_utils.py](file:///home/ubuntu/price-aggregator/price_utils.py) в `backend/app/core/`.
-  * Рефакторинг кода ядра для работы с БД (загрузка настроек колонок, каталога синонимов и списка производителей из таблиц вместо конфигурационных файлов на диске).
-* [ ] **Этап 3: Telegram-бот и авторизация**
-  * Разработка Telegram-бота на `aiogram 3.x`.
-  * Реализация хендлеров `/start`, генерации Magic Link для веб-версии.
-  * Реализация приема файлов Excel (сохранение на сервер, запись в БД).
-* [ ] **Этап 4: API Бэкенда и Celery**
-  * Эндпоинты для управления настройками, каталогом и файлами.
-  * Интеграция Celery-задач для фонового процессинга.
-  * WebSocket или SSE эндпоинт для отслеживания логов/прогресса работы воркера.
-* [ ] **Этап 5: Разработка Фронтенда (React)**
-  * Настройка дизайн-системы (Vanilla CSS, темная тема, стеклянные карточки).
-  * Создание страниц: загрузка прайсов, редактор каталога, редактор кандидатов колонок, история запусков и отчетов.
-  * Интеграция с Telegram WebApp для работы внутри мессенджера.
-* [ ] **Этап 6: Тестирование и деплой**
-  * Написание базовых интеграционных тестов.
-  * Проверка полного сценария (Загрузка файлов в бот -> Запуск на сайте -> Получение отчета в боте).
+3. **Запрос статуса системы и доступных сводных прайсов**:
+   - Пользователь пишет в чат: *"Агрегатор, когда был последний сводный прайс?"* или команду `/status`.
+   - `Aggregator Bot` запрашивает состояния задач и файлов бэкенда -> мгновенно отписывает дату свежей сборки и статус работы Scout-агента.

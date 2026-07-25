@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import asyncio
+from typing import Optional
 import google.generativeai as genai
 
 import config
@@ -87,12 +88,12 @@ async def generate_ai_report(analysis_data: dict, include_deficit: bool = True) 
         f"{json.dumps(analysis_data, ensure_ascii=False, indent=2)}"
     )
     
-    logger.info("Calling Gemini 2.5 Flash API...")
+    logger.info(f"Calling Gemini ({config.GEMINI_MODEL}) API...")
     loop = asyncio.get_running_loop()
     
     def _call_gemini():
         model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",
+            model_name=config.GEMINI_MODEL,
             system_instruction=system_instruction
         )
         response = model.generate_content(
@@ -106,26 +107,42 @@ async def generate_ai_report(analysis_data: dict, include_deficit: bool = True) 
 
 
 async def classify_user_request(text: str) -> dict:
-    """Определяет интент пользователя (анализ производителя, препарата или общий) с помощью Gemini 2.5 Flash."""
+    """Определяет интент пользователя (анализ производителя, препарата, статус БД или общий Q&A) с помощью Gemini."""
+    text_low = text.lower()
+
+    # Быстрая детерминированная проверка для вопросов о наличии файлов/прайсов/БД
+    db_keywords = [
+        "какие прайсы", "какие файлы", "доступны в бд", "доступны для анализа",
+        "список файлов", "список прайсов", "что загружено", "состояние бд",
+        "доступные прайсы", "файлы в базе", "прайсы в базе"
+    ]
+    if any(kw in text_low for kw in db_keywords):
+        logger.info("Fast classification match: database_info")
+        return {"request_type": "database_info", "target": None, "days": 3}
+
     system_instruction = (
         "Ты — аналитический классификатор запросов для фармацевтического бота.\n"
-        "Определи, какой именно тип анализа запрашивает пользователь:\n"
-        "1. Анализ по производителю (например, 'анализ цен КРКА', 'что изменилось у Материа Медика за 3 дня')\n"
-        "2. Анализ по конкретному препарату (например, 'анализ цен по препарату Виферон 150', 'какие цены на Анаферон капли за последние 2 дня')\n"
-        "3. Общий отчет по сводному прайсу (например, 'сводный прайс собран', 'сделай общий анализ', 'покажи изменения')\n\n"
+        "Определи, какой именно тип ответа или анализа запрашивает пользователь:\n"
+        "1. Анализ по производителю (например, 'анализ цен КРКА', 'что изменилось у Материа Медика за 3 дня') -> request_type: 'manufacturer'\n"
+        "2. Анализ по конкретному препарату (например, 'анализ цен по препарату Виферон 150', 'какие цены на Анаферон капли за последние 2 дня') -> request_type: 'drug'\n"
+        "3. Вопрос о содержимом БД/файлов (например, 'какие сводные прайс листы доступны в БД', 'покажи список файлов', 'сколько прайсов загружено') -> request_type: 'database_info'\n"
+        "4. Общий вопрос / диалог / справка (например, 'привет', 'что ты умеешь', 'как пользоваться') -> request_type: 'general_qa'\n"
+        "5. Общий отчет по сводному прайсу (например, 'сводный прайс собран', 'сделай общий анализ', 'покажи изменения') -> request_type: 'standard'\n\n"
         "Ответ должен быть СТРОГО в формате JSON с полями:\n"
-        "- 'request_type': строка, одна из: 'manufacturer', 'drug', 'standard'\n"
-        "- 'target': строка с названием производителя или препарата (например, 'KRKA' или 'Виферон 150000') или null, если не применимо.\n"
+        "- 'request_type': строка, одна из: 'manufacturer', 'drug', 'database_info', 'general_qa', 'standard'\n"
+        "- 'target': строка с названием производителя или препарата или null, если не применимо.\n"
         "- 'days': целое число дней (если указано в запросе, например 'за 2 дня' -> 2; по умолчанию 3 если не указано).\n"
+        "- 'date1': первая дата из запроса в формате 'ДД.ММ.ГГГГ' (например '29.06.2026') или null.\n"
+        "- 'date2': вторая дата из запроса в формате 'ДД.ММ.ГГГГ' (например '25.07.2026') или null.\n"
         "Не добавляй никаких пояснений, только валидный JSON."
     )
     
-    logger.info("Classifying user request via Gemini...")
+    logger.info(f"Classifying user request via Gemini ({config.GEMINI_MODEL})...")
     loop = asyncio.get_running_loop()
     
     def _call_gemini():
         model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",
+            model_name=config.GEMINI_MODEL,
             system_instruction=system_instruction
         )
         response = model.generate_content(
@@ -136,10 +153,20 @@ async def classify_user_request(text: str) -> dict:
 
     try:
         raw_response = await loop.run_in_executor(None, _call_gemini)
-        return json.loads(raw_response)
+        res = json.loads(raw_response)
+        # Автодополнение дат через регулярное выражение, если не распаршено
+        if not res.get("date1") or not res.get("date2"):
+            dates = re.findall(r'\b\d{2}\.\d{2}\.\d{4}\b', text)
+            if len(dates) >= 2:
+                res["date1"] = dates[0]
+                res["date2"] = dates[1]
+        return res
     except Exception as e:
         logger.exception(f"Error during classification: {e}")
-        return {"request_type": "standard", "target": None, "days": 3}
+        dates = re.findall(r'\b\d{2}\.\d{2}\.\d{4}\b', text)
+        date1 = dates[0] if len(dates) >= 1 else None
+        date2 = dates[1] if len(dates) >= 2 else None
+        return {"request_type": "standard", "target": None, "days": 3, "date1": date1, "date2": date2}
 
 
 async def generate_manufacturer_report(analysis_data: dict, manufacturer: str, days: int) -> str:
@@ -164,12 +191,12 @@ async def generate_manufacturer_report(analysis_data: dict, manufacturer: str, d
         f"{json.dumps(analysis_data, ensure_ascii=False, indent=2)}"
     )
     
-    logger.info("Calling Gemini 2.5 Flash for manufacturer report...")
+    logger.info(f"Calling Gemini ({config.GEMINI_MODEL}) for manufacturer report...")
     loop = asyncio.get_running_loop()
     
     def _call_gemini():
         model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",
+            model_name=config.GEMINI_MODEL,
             system_instruction=system_instruction
         )
         response = model.generate_content(
@@ -204,12 +231,12 @@ async def generate_drug_report(analysis_data: dict, drug: str, days: int) -> str
         f"{json.dumps(analysis_data, ensure_ascii=False, indent=2)}"
     )
     
-    logger.info("Calling Gemini 2.5 Flash for drug report...")
+    logger.info(f"Calling Gemini ({config.GEMINI_MODEL}) for drug report...")
     loop = asyncio.get_running_loop()
     
     def _call_gemini():
         model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",
+            model_name=config.GEMINI_MODEL,
             system_instruction=system_instruction
         )
         response = model.generate_content(
@@ -220,3 +247,40 @@ async def generate_drug_report(analysis_data: dict, drug: str, days: int) -> str
         
     raw_report = await loop.run_in_executor(None, _call_gemini)
     return sanitize_telegram_html(raw_report)
+
+
+async def generate_general_qa_report(user_query: str, system_summary: Optional[dict] = None) -> str:
+    """Генерирует ответ на свободный вопрос пользователя или вопрос о состоянии БД."""
+    system_instruction = (
+        "Ты — умный и вежливый ИИ-Ассистент и Аналитик фармацевтического агрегатора цен в Узбекистане.\n"
+        "Твоя задача — отвечать на вопросы пользователя понятным, профессиональным и структурированным языком.\n\n"
+        "Правила оформления отчета:\n"
+        "1. Используй ТОЛЬКО разрешенные теги Telegram HTML: <b> (или <strong>), <i> (или <em>), <u>, <s>, <code>, <pre>, <a>.\n"
+        "2. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать теги абзацев <p>, переноса строки <br>, заголовков <h1>-<h6>, блоков <div>, списков <ul>, <ol>, <li>. Разделяй абзацы обычными переводами строк (\\n), а списки оформляй эмодзи или дефисами.\n"
+        "3. Категорически запрещено использовать Markdown (символы * или _).\n"
+        "4. Пиши вежливо, точно и лаконично."
+    )
+    
+    summary_text = ""
+    if system_summary:
+        summary_text = f"\n\nТекущее состояние базы данных и файлов:\n{json.dumps(system_summary, ensure_ascii=False, indent=2)}"
+        
+    user_prompt = f"Вопрос пользователя: '{user_query}'{summary_text}"
+    
+    logger.info(f"Calling Gemini ({config.GEMINI_MODEL}) for general QA/DB info response...")
+    loop = asyncio.get_running_loop()
+    
+    def _call_gemini():
+        model = genai.GenerativeModel(
+            model_name=config.GEMINI_MODEL,
+            system_instruction=system_instruction
+        )
+        response = model.generate_content(
+            user_prompt,
+            generation_config={"temperature": 0.3}
+        )
+        return response.text
+        
+    raw_report = await loop.run_in_executor(None, _call_gemini)
+    return sanitize_telegram_html(raw_report)
+

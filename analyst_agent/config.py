@@ -13,6 +13,7 @@ if MAIN_BOT_TOKEN and ":" in MAIN_BOT_TOKEN:
         pass
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "internal_secret_api_key_98765")
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 

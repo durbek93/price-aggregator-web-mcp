@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
 import pandas as pd
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -13,29 +13,57 @@ router = APIRouter(prefix="/analysis", tags=["analysis"])
 
 @router.get("/compare")
 def compare_prices(
+    date1: Optional[str] = None,
+    date2: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Сравнивает цены двух последних горизонтальных сводных отчетов."""
+    """Сравнивает цены двух сводных отчетов (по умолчанию двух последних или по указанным датам)."""
     # 1. Авто-обнаружение, синхронизация с диском и дедупликация
     from app.api.dependencies import auto_discover_user_files
     auto_discover_user_files(db, current_user.id)
 
-    # Ищем два последних файла отчетов с типом "output" и содержащих "Сводный" в имени
-    output_files = db.query(FileRecord).filter(
+    query = db.query(FileRecord).filter(
         FileRecord.user_id == current_user.id,
         FileRecord.file_type == "output",
         FileRecord.filename.like("%Сводный%")
-    ).order_by(FileRecord.uploaded_at.desc()).limit(2).all()
+    )
 
-    if not output_files:
+    if date1 and date2:
+        file1 = query.filter(FileRecord.filename.like(f"%{date1}%")).first()
+        file2 = query.filter(FileRecord.filename.like(f"%{date2}%")).first()
+
+        if not file1 or not file2:
+            all_outputs = query.order_by(FileRecord.uploaded_at.desc()).all()
+            if not file1:
+                file1 = next((f for f in all_outputs if date1 in f.filename or (f.uploaded_at and date1 in f.uploaded_at.strftime("%d.%m.%Y"))), None)
+            if not file2:
+                file2 = next((f for f in all_outputs if date2 in f.filename or (f.uploaded_at and date2 in f.uploaded_at.strftime("%d.%m.%Y"))), None)
+
+        if file1 and file2:
+            if file1.uploaded_at < file2.uploaded_at:
+                current_file, previous_file = file2, file1
+            else:
+                current_file, previous_file = file1, file2
+        else:
+            output_files = query.order_by(FileRecord.uploaded_at.desc()).limit(2).all()
+            current_file = output_files[0] if output_files else None
+            previous_file = output_files[1] if len(output_files) > 1 else None
+    else:
+        output_files = query.order_by(FileRecord.uploaded_at.desc()).limit(2).all()
+        if not output_files:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Не найдено ни одного сгенерированного сводного прайс-листа"
+            )
+        current_file = output_files[0]
+        previous_file = output_files[1] if len(output_files) > 1 else None
+
+    if not current_file:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Не найдено ни одного сгенерированного сводного прайс-листа"
+            detail="Не найдено подходящих сводных прайс-листов для сравнения"
         )
-
-    current_file = output_files[0]
-    previous_file = output_files[1] if len(output_files) > 1 else None
 
     # Загружаем настройки пользователя (для списка производителей/препаратов)
     user_settings = db.query(UserSettings).filter(UserSettings.user_id == current_user.id).first()
@@ -610,3 +638,57 @@ def compare_drug_prices(
         },
         "drugs": drugs_analysis
     }
+
+
+@router.get("/system-summary")
+def get_system_summary(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Возвращает общую сводку о загруженных прайсах, сводных отчетах и каталоге для ИИ-агента."""
+    from app.api.dependencies import auto_discover_user_files
+    from app.models import CatalogItem
+
+    auto_discover_user_files(db, current_user.id)
+
+    output_files = db.query(FileRecord).filter(
+        FileRecord.user_id == current_user.id,
+        FileRecord.file_type == "output"
+    ).order_by(FileRecord.uploaded_at.desc()).limit(10).all()
+
+    input_files = db.query(FileRecord).filter(
+        FileRecord.user_id == current_user.id,
+        FileRecord.file_type == "input"
+    ).order_by(FileRecord.uploaded_at.desc()).all()
+
+    catalog_count = db.query(CatalogItem).filter(CatalogItem.user_id == current_user.id).count()
+
+    output_summary = [
+        {
+            "id": f.id,
+            "filename": f.display_name or f.filename,
+            "size_kb": round(f.file_size / 1024, 1),
+            "uploaded_at": f.uploaded_at.strftime("%Y-%m-%d %H:%M") if f.uploaded_at else None
+        }
+        for f in output_files
+    ]
+
+    input_summary = [
+        {
+            "id": f.id,
+            "filename": f.display_name or f.filename,
+            "read_preset": f.read_preset,
+            "uploaded_at": f.uploaded_at.strftime("%Y-%m-%d %H:%M") if f.uploaded_at else None
+        }
+        for f in input_files
+    ]
+
+    return {
+        "user_id": current_user.id,
+        "total_input_files": len(input_files),
+        "total_output_files": len(output_files),
+        "catalog_items_count": catalog_count,
+        "latest_output_reports": output_summary,
+        "uploaded_input_prices": input_summary
+    }
+

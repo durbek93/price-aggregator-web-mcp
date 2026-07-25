@@ -8,17 +8,24 @@ import config
 logger = logging.getLogger("analyst_agent.backend_client")
 
 
-async def fetch_analysis_data() -> Optional[dict]:
-    """Запрашивает дельту цен с бэкенда FastAPI для общего еженедельного анализа."""
+async def fetch_analysis_data(date1: Optional[str] = None, date2: Optional[str] = None) -> Optional[dict]:
+    """Запрашивает дельту цен с бэкенда FastAPI для общего еженедельного анализа или сравнения двух конкретных дат."""
     try:
-        logger.info("Fetching price comparison analysis from backend...")
+        logger.info(f"Fetching price comparison analysis from backend (date1={date1}, date2={date2})...")
         headers = {
             "X-Internal-API-Key": config.INTERNAL_API_KEY,
             "X-Target-User-ID": "1"
         }
+        params = {}
+        if date1:
+            params["date1"] = date1
+        if date2:
+            params["date2"] = date2
+
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{config.BACKEND_URL}/api/analysis/compare",
+                params=params,
                 headers=headers,
                 timeout=60.0
             )
@@ -89,3 +96,31 @@ async def fetch_drug_data(drug: str, days: int) -> Optional[dict]:
     except Exception as e:
         logger.exception(f"Exception during fetching drug data: {e}")
         return None
+
+
+async def fetch_system_summary() -> Optional[dict]:
+    """Запрашивает сводку системы (файлы, сводные отчёты, каталог) с бэкенда."""
+    try:
+        logger.info("Fetching system summary from backend...")
+        headers = {
+            "X-Internal-API-Key": config.INTERNAL_API_KEY,
+            "X-Target-User-ID": "1"
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{config.BACKEND_URL}/api/analysis/system-summary",
+                headers=headers,
+                timeout=60.0
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(
+                    f"Failed to fetch system summary. Code: {response.status_code}, Detail: {response.text}"
+                )
+                return None
+    except Exception as e:
+        logger.exception(f"Exception during fetching system summary: {e}")
+        return None
+

@@ -11,12 +11,14 @@ from backend_client import (
     fetch_analysis_data,
     fetch_manufacturer_data,
     fetch_drug_data,
+    fetch_system_summary,
 )
 from gemini_service import (
     classify_user_request,
     generate_ai_report,
     generate_manufacturer_report,
     generate_drug_report,
+    generate_general_qa_report,
 )
 
 # Configure logging
@@ -272,7 +274,7 @@ async def handle_new_report_notification(message: types.Message):
         logger.info("Ignored message: not from main bot and bot is not mentioned.")
         return
         
-    # 4. Проверяем триггерный текст от бэкенда или ключевые слова
+    # 4. Проверяем триггерный текст от бэкенда или ключевые слова (если бот не был прямо упомянут)
     has_trigger_keyword = any(
         kw in text_low
         for kw in [
@@ -282,10 +284,17 @@ async def handle_new_report_notification(message: types.Message):
             "изменени",
             "дефицит",
             "аналитик",
+            "прайс",
+            "файл",
+            "база",
+            "бд",
+            "какие",
+            "покажи",
+            "сводн",
         ]
     )
-    if not has_trigger_keyword:
-        logger.info("Ignored message: no trigger keyword found in message.")
+    if not (is_mentioned or is_from_main_bot or message.chat.type == "private" or has_trigger_keyword):
+        logger.info("Ignored message: no trigger keyword found and bot is not directly addressed.")
         return
         
     logger.info("Valid trigger message intercepted. Processing analysis report...")
@@ -304,8 +313,19 @@ async def handle_new_report_notification(message: types.Message):
             req_type = classification.get("request_type")
             target = classification.get("target")
             days = classification.get("days", 3)
+            date1 = classification.get("date1")
+            date2 = classification.get("date2")
             
-            if req_type == "manufacturer" and target:
+            if req_type == "database_info" or req_type == "general_qa":
+                logger.info(f"Classified as {req_type} request")
+                summary = await fetch_system_summary()
+                report_text = await generate_general_qa_report(text, summary)
+                await safe_delete_message(status_msg)
+                logger.info("Sending general QA / DB info response...")
+                await send_report_in_chunks(message, report_text, parse_mode="HTML")
+                return
+
+            elif req_type == "manufacturer" and target:
                 logger.info(f"Classified as manufacturer request: {target} for {days} days")
                 
                 # Шаг 1: Запрашиваем исторические данные по производителю
@@ -354,7 +374,7 @@ async def handle_new_report_notification(message: types.Message):
                 return
 
             # Шаг 1: Запрашиваем дельту цен с бэкенда для общего отчета
-            data = await fetch_analysis_data()
+            data = await fetch_analysis_data(date1=date1, date2=date2)
             if not data or not data.get("drugs"):
                 error_text = (
                     "❌ Не удалось получить данные анализа цен от бэкенда."

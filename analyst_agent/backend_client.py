@@ -124,3 +124,31 @@ async def fetch_system_summary() -> Optional[dict]:
         logger.exception(f"Exception during fetching system summary: {e}")
         return None
 
+
+async def fetch_sales_data() -> Optional[dict]:
+    """Запрашивает с бэкенда данные отчетов о продажах (из outputs/1/sales)."""
+    try:
+        logger.info("Fetching sales analysis from backend...")
+        headers = {
+            "X-Internal-API-Key": config.INTERNAL_API_KEY,
+            "X-Target-User-ID": "1"
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{config.BACKEND_URL}/api/analysis/sales-compare",
+                headers=headers,
+                timeout=60.0
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(
+                    f"Failed to fetch sales compare. Code: {response.status_code}, Detail: {response.text}"
+                )
+                return None
+    except Exception as e:
+        logger.exception(f"Exception during fetching sales data: {e}")
+        return None
+
+

@@ -107,8 +107,30 @@ async def generate_ai_report(analysis_data: dict, include_deficit: bool = True) 
 
 
 async def classify_user_request(text: str) -> dict:
-    """Определяет интент пользователя (анализ производителя, препарата, статус БД или общий Q&A) с помощью Gemini."""
+    """Определяет интент пользователя (анализ производителя, препарата, статус БД, графики, презентации или общий Q&A) с помощью Gemini."""
     text_low = text.lower()
+
+    chart_keywords = ["график", "графики", "диаграмму", "диаграмма", "рисуй", "нарисуй", "построй", "визуализ", "chart"]
+    pres_keywords = ["презентац", "презентацию", "слайд", "pptx", "powerpoint", "пауэрпоинт"]
+
+    wants_chart = any(kw in text_low for kw in chart_keywords)
+    wants_presentation = any(kw in text_low for kw in pres_keywords)
+
+    # Быстрая детерминированная проверка для вопросов о продажах
+    sales_keywords = [
+        "отчет по продажам", "отчёт по продажам", "анализ продаж", "аналитика продаж",
+        "сколько продали", "продажи по дистрибьюторам", "динамика продаж", "объем продаж",
+        "продажи", "sales", "папка sales", "папке sales", "файлы sales", "отчеты продаж"
+    ]
+    if any(kw in text_low for kw in sales_keywords) or ((wants_chart or wants_presentation) and "цен" not in text_low):
+        logger.info("Fast classification match: sales")
+        return {
+            "request_type": "sales",
+            "target": None,
+            "days": 30,
+            "wants_chart": wants_chart,
+            "wants_presentation": wants_presentation
+        }
 
     # Быстрая детерминированная проверка для вопросов о наличии файлов/прайсов/БД
     db_keywords = [
@@ -118,7 +140,13 @@ async def classify_user_request(text: str) -> dict:
     ]
     if any(kw in text_low for kw in db_keywords):
         logger.info("Fast classification match: database_info")
-        return {"request_type": "database_info", "target": None, "days": 3}
+        return {
+            "request_type": "database_info",
+            "target": None,
+            "days": 3,
+            "wants_chart": wants_chart,
+            "wants_presentation": wants_presentation
+        }
 
     system_instruction = (
         "Ты — аналитический классификатор запросов для фармацевтического бота.\n"
@@ -126,10 +154,11 @@ async def classify_user_request(text: str) -> dict:
         "1. Анализ по производителю (например, 'анализ цен КРКА', 'что изменилось у Материа Медика за 3 дня') -> request_type: 'manufacturer'\n"
         "2. Анализ по конкретному препарату (например, 'анализ цен по препарату Виферон 150', 'какие цены на Анаферон капли за последние 2 дня') -> request_type: 'drug'\n"
         "3. Вопрос о содержимом БД/файлов (например, 'какие сводные прайс листы доступны в БД', 'покажи список файлов', 'сколько прайсов загружено') -> request_type: 'database_info'\n"
-        "4. Общий вопрос / диалог / справка (например, 'привет', 'что ты умеешь', 'как пользоваться') -> request_type: 'general_qa'\n"
-        "5. Общий отчет по сводному прайсу (например, 'сводный прайс собран', 'сделай общий анализ', 'покажи изменения') -> request_type: 'standard'\n\n"
+        "4. Отчет по ПРОДАЖАМ (например, 'анализ продаж', 'отчет по продажам', 'сколько продали в упаковках') -> request_type: 'sales'\n"
+        "5. Общий вопрос / диалог / справка (например, 'привет', 'что ты умеешь', 'как пользоваться') -> request_type: 'general_qa'\n"
+        "6. Общий отчет по сводному прайсу (например, 'сводный прайс собран', 'сделай общий анализ', 'покажи изменения') -> request_type: 'standard'\n\n"
         "Ответ должен быть СТРОГО в формате JSON с полями:\n"
-        "- 'request_type': строка, одна из: 'manufacturer', 'drug', 'database_info', 'general_qa', 'standard'\n"
+        "- 'request_type': строка, одна из: 'manufacturer', 'drug', 'database_info', 'sales', 'general_qa', 'standard'\n"
         "- 'target': строка с названием производителя или препарата или null, если не применимо.\n"
         "- 'days': целое число дней (если указано в запросе, например 'за 2 дня' -> 2; по умолчанию 3 если не указано).\n"
         "- 'date1': первая дата из запроса в формате 'ДД.ММ.ГГГГ' (например '29.06.2026') или null.\n"
@@ -160,6 +189,8 @@ async def classify_user_request(text: str) -> dict:
             if len(dates) >= 2:
                 res["date1"] = dates[0]
                 res["date2"] = dates[1]
+        res["wants_chart"] = wants_chart
+        res["wants_presentation"] = wants_presentation
         return res
     except Exception as e:
         logger.exception(f"Error during classification: {e}")
@@ -253,7 +284,8 @@ async def generate_general_qa_report(user_query: str, system_summary: Optional[d
     """Генерирует ответ на свободный вопрос пользователя или вопрос о состоянии БД."""
     system_instruction = (
         "Ты — умный и вежливый ИИ-Ассистент и Аналитик фармацевтического агрегатора цен в Узбекистане.\n"
-        "Твоя задача — отвечать на вопросы пользователя понятным, профессиональным и структурированным языком.\n\n"
+        "Твоя задача — отвечать на вопросы пользователя понятным, профессиональным и структурированным языком.\n"
+        "Обрати внимание: отчеты по ПРОДАЖАМ в папке 'sales' (все 12 месяцев 2025 года) ДОСТУПНЫ в системе и готовы для анализа по первому запросу пользователя.\n\n"
         "Правила оформления отчета:\n"
         "1. Используй ТОЛЬКО разрешенные теги Telegram HTML: <b> (или <strong>), <i> (или <em>), <u>, <s>, <code>, <pre>, <a>.\n"
         "2. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать теги абзацев <p>, переноса строки <br>, заголовков <h1>-<h6>, блоков <div>, списков <ul>, <ol>, <li>. Разделяй абзацы обычными переводами строк (\\n), а списки оформляй эмодзи или дефисами.\n"
@@ -283,4 +315,57 @@ async def generate_general_qa_report(user_query: str, system_summary: Optional[d
         
     raw_report = await loop.run_in_executor(None, _call_gemini)
     return sanitize_telegram_html(raw_report)
+
+
+async def generate_sales_report(analysis_data: dict, user_query: str = "") -> str:
+    """Генерирует ответ или аналитический отчет по Реализации и Остаткам (упаковки) по региону г. Фергана."""
+    city_name = analysis_data.get("meta", {}).get("city", "г. Фергана")
+    system_instruction = (
+        f"Ты — Коммерческий директор и Ведущий аналитик фармацевтической компании в Узбекистане.\n"
+        f"У тебя есть полные помесячные агрегированные данные по **Реализации (проданным упаковкам)** "
+        f"и **Остаткам** по каждому препарату в регионе <b>{city_name}</b> за 2025 год (поля `by_month` и `by_product`).\n\n"
+        "ПРАВИЛА ОБРАБОТКИ ЗАПРОСОВ ПОЛЬЗОВАТЕЛЯ:\n"
+        "1. **Запрос отчета за конкретный месяц** (например: 'отчёт продаж за декабрь 2025 по всем препаратам'):\n"
+        "   -> Найди в данных соответствующий месяц в `by_month` (например, 'Декабрь 2025').\n"
+        "   -> Выведи отчёт ПО КАЖДОМУ ПРЕПАРАТУ отдельно за этот месяц: Реализация (упаковок) и Остаток на конец месяца.\n"
+        "   -> Выведи общий итог реализации и остатка за этот месяц.\n\n"
+        "2. **Запрос сравнения двух периодов** (например: 'сравни продажи за ноябрь 2025 и декабрь 2025'):\n"
+        "   -> Возьми данные по обоим месяцам из `by_month`.\n"
+        "   -> Проведи детальное сравнение ПО КАЖДОМУ ПРЕПАРАТУ: покажи продажи за Месяц1, продажи за Месяц2, прирост/падение в упаковках (+/-) и в процентах (%), а также динамику остатков.\n"
+        "   -> Сделай краткие аналитические выводы: какие препараты показали наибольший рост, а какие просели.\n\n"
+        "3. **Конкретный точечный вопрос** (например: 'какие данные есть в папке sales?', 'сколько продали Анаферона детского в октябре?'):\n"
+        "   -> Ответь ЧЕТКО, ТОЧНО И ЛАКОНИЧНО ИМЕННО НА ЭТОТ ВОПРОС. Не генерируй гигантский шаблонизированный отчет со всеми блоками.\n\n"
+        "4. **Общий / развернутый отчет по продажам** (например: 'сделай полный отчет по продажам', 'аналитика за весь 2025 год'):\n"
+        "   -> Выведи годовые сводные итоги по региону, топ препаратов, динамику и рейтинг поставщиков.\n\n"
+        "Правила оформления отчета:\n"
+        "1. Используй ТОЛЬКО разрешенные теги Telegram HTML: <b>, <i>, <u>, <s>, <code>, <pre>, <a>.\n"
+        "2. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать теги абзацев <p>, переноса строки <br>, заголовков <h1>-<h6>, блоков <div>, списков <ul>, <ol>, <li>. Разделяй абзацы обычными переводами строк (\\n), а списки оформляй эмодзи (например: 📊, 🏆, 💊, 📦, 📈, 📉).\n"
+        "3. Категорически запрещено использовать Markdown (символы * или _).\n"
+        "4. Опирайся СТРОГО на переданный JSON. Все данные по каждому месяцу и препарату находятся в объектах `by_month` и `by_product`. Не придумывай цифры!"
+    )
+    
+    prompt_query_part = f"Запрос/Вопрос пользователя: '{user_query}'\n\n" if user_query else ""
+    user_prompt = (
+        f"{prompt_query_part}"
+        f"Агрегированные данные по продажам в упаковках по региону {city_name}:\n\n"
+        f"{json.dumps(analysis_data, ensure_ascii=False, indent=2)}"
+    )
+    
+    logger.info(f"Calling Gemini ({config.GEMINI_MODEL}) for sales response (query: '{user_query[:50]}')...")
+    loop = asyncio.get_running_loop()
+    
+    def _call_gemini():
+        model = genai.GenerativeModel(
+            model_name=config.GEMINI_MODEL,
+            system_instruction=system_instruction
+        )
+        response = model.generate_content(
+            user_prompt,
+            generation_config={"temperature": 0.2}
+        )
+        return response.text
+        
+    raw_report = await loop.run_in_executor(None, _call_gemini)
+    return sanitize_telegram_html(raw_report)
+
 

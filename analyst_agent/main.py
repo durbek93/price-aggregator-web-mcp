@@ -4,14 +4,18 @@ import asyncio
 import re
 
 from aiogram import Bot, Dispatcher, types
+from aiogram.types import BufferedInputFile
 from aiogram.enums import ChatAction
 
 import config
+import chart_generator
+import presentation_generator
 from backend_client import (
     fetch_analysis_data,
     fetch_manufacturer_data,
     fetch_drug_data,
     fetch_system_summary,
+    fetch_sales_data,
 )
 from gemini_service import (
     classify_user_request,
@@ -19,6 +23,7 @@ from gemini_service import (
     generate_manufacturer_report,
     generate_drug_report,
     generate_general_qa_report,
+    generate_sales_report,
 )
 
 # Configure logging
@@ -316,6 +321,9 @@ async def handle_new_report_notification(message: types.Message):
             date1 = classification.get("date1")
             date2 = classification.get("date2")
             
+            wants_chart = classification.get("wants_chart", False)
+            wants_presentation = classification.get("wants_presentation", False)
+
             if req_type == "database_info" or req_type == "general_qa":
                 logger.info(f"Classified as {req_type} request")
                 summary = await fetch_system_summary()
@@ -347,6 +355,20 @@ async def handle_new_report_notification(message: types.Message):
                 await safe_delete_message(status_msg)
                 logger.info("Sending manufacturer analytical report...")
                 await send_report_in_chunks(message, report_text, parse_mode="HTML")
+
+                if wants_chart:
+                    chart_bytes = chart_generator.generate_price_trend_chart(data, target)
+                    if chart_bytes:
+                        photo = BufferedInputFile(chart_bytes, filename="manufacturer_prices.png")
+                        await message.reply_photo(photo=photo, caption=f"📊 <b>Сравнение цен: {target}</b>", parse_mode="HTML")
+
+                if wants_presentation:
+                    sales_data = await fetch_sales_data() or {}
+                    pptx_bytes = presentation_generator.build_analytics_presentation(sales_data, title=f"Аналитический отчёт: {target}")
+                    if pptx_bytes:
+                        doc = BufferedInputFile(pptx_bytes, filename=f"presentation_{target}.pptx")
+                        await message.reply_document(document=doc, caption=f"📽 <b>Аналитическая презентация: {target} (.pptx)</b>", parse_mode="HTML")
+
                 return
 
             elif req_type == "drug" and target:
@@ -371,6 +393,52 @@ async def handle_new_report_notification(message: types.Message):
                 await safe_delete_message(status_msg)
                 logger.info("Sending drug analytical report...")
                 await send_report_in_chunks(message, report_text, parse_mode="HTML")
+
+                if wants_chart:
+                    chart_bytes = chart_generator.generate_price_trend_chart(data, target)
+                    if chart_bytes:
+                        photo = BufferedInputFile(chart_bytes, filename="drug_prices.png")
+                        await message.reply_photo(photo=photo, caption=f"📊 <b>Цены по препарату: {target}</b>", parse_mode="HTML")
+
+                if wants_presentation:
+                    sales_data = await fetch_sales_data() or {}
+                    pptx_bytes = presentation_generator.build_analytics_presentation(sales_data, title=f"Анализ рынка: {target}")
+                    if pptx_bytes:
+                        doc = BufferedInputFile(pptx_bytes, filename="drug_presentation.pptx")
+                        await message.reply_document(document=doc, caption=f"📽 <b>Презентация по препарату: {target} (.pptx)</b>", parse_mode="HTML")
+
+                return
+
+            elif req_type == "sales":
+                logger.info("Classified as sales request")
+                data = await fetch_sales_data()
+                if not data or (not data.get("by_distributor") and not data.get("by_product") and not data.get("summary")):
+                    error_text = (
+                        "❌ Не удалось получить данные о продажах с бэкенда."
+                        if not data
+                        else "⚠️ Данные о продажах в папке outputs/sales отсутствуют или не удалось распарсить Excel-файлы."
+                    )
+                    await safe_delete_message(status_msg)
+                    await message.reply(error_text)
+                    return
+
+                report_text = await generate_sales_report(data, user_query=text)
+                await safe_delete_message(status_msg)
+                logger.info("Sending sales analytical report...")
+                await send_report_in_chunks(message, report_text, parse_mode="HTML")
+
+                if wants_chart or not (wants_chart or wants_presentation):  # По умолчанию высылаем график для продаж при прямо затребованном отчете
+                    chart_bytes = chart_generator.generate_sales_chart(data)
+                    if chart_bytes:
+                        photo = BufferedInputFile(chart_bytes, filename="sales_dashboard.png")
+                        await message.reply_photo(photo=photo, caption="📊 <b>Дашборд реализации по месяцам и долей дистрибьюторов</b>", parse_mode="HTML")
+
+                if wants_presentation:
+                    pptx_bytes = presentation_generator.build_analytics_presentation(data, title="Анализ продаж и остатков")
+                    if pptx_bytes:
+                        doc = BufferedInputFile(pptx_bytes, filename="sales_analytics.pptx")
+                        await message.reply_document(document=doc, caption="📽 <b>Презентация по продажам (.pptx)</b>", parse_mode="HTML")
+
                 return
 
             # Шаг 1: Запрашиваем дельту цен с бэкенда для общего отчета
@@ -396,6 +464,20 @@ async def handle_new_report_notification(message: types.Message):
             await safe_delete_message(status_msg)
             logger.info("Sending analytical report to the group chat...")
             await send_report_in_chunks(message, report_text, parse_mode="HTML")
+
+            if wants_chart:
+                chart_bytes = chart_generator.generate_price_trend_chart(data, "Общий анализ цен")
+                if chart_bytes:
+                    photo = BufferedInputFile(chart_bytes, filename="price_analysis.png")
+                    await message.reply_photo(photo=photo, caption="📊 <b>Сравнение минимальных и средних цен</b>", parse_mode="HTML")
+
+            if wants_presentation:
+                sales_data = await fetch_sales_data() or {}
+                pptx_bytes = presentation_generator.build_analytics_presentation(sales_data, title="Общий аналитический отчёт рынка")
+                if pptx_bytes:
+                    doc = BufferedInputFile(pptx_bytes, filename="market_summary.pptx")
+                    await message.reply_document(document=doc, caption="📽 <b>Аналитическая презентация (.pptx)</b>", parse_mode="HTML")
+
 
         except Exception as e:
             logger.exception(f"Exception during report generation/sending: {e}")

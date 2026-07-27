@@ -683,12 +683,57 @@ def get_system_summary(
         for f in input_files
     ]
 
+    # 3. Файлы отчетов по продажам (папка sales)
+    from pathlib import Path
+    from app.config import settings
+    sales_dir = settings.OUTPUT_DIR / "sales"
+    sales_files = []
+    if sales_dir.exists():
+        sales_files = [f.name for f in sales_dir.glob("*.xlsx")]
+
     return {
         "user_id": current_user.id,
         "total_input_files": len(input_files),
         "total_output_files": len(output_files),
+        "total_sales_files": len(sales_files),
+        "sales_files": sales_files,
         "catalog_items_count": catalog_count,
         "latest_output_reports": output_summary,
         "uploaded_input_prices": input_summary
     }
+
+
+@router.get("/sales-compare")
+def compare_sales_data(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Агрегирует данные о продажах пользователя из директории outputs/{user_id}/sales/."""
+    from pathlib import Path
+    from app.config import settings
+    from app.api.dependencies import auto_discover_user_files
+    from app.core.sales_parser import aggregate_sales_data
+
+    # Синхронизируем обнаружение файлов
+    auto_discover_user_files(db, current_user.id)
+
+    sales_dir = settings.OUTPUT_DIR / str(current_user.id) / "sales"
+    data = aggregate_sales_data(sales_dir)
+
+    if data.get("summary", {}).get("total_realization", 0) == 0 and data.get("summary", {}).get("total_units", 0) == 0:
+        # Резервная проверка 1: outputs/sales/
+        shared_sales_dir = settings.OUTPUT_DIR / "sales"
+        if shared_sales_dir.exists():
+            data = aggregate_sales_data(shared_sales_dir)
+
+    if data.get("summary", {}).get("total_realization", 0) == 0 and data.get("summary", {}).get("total_units", 0) == 0:
+        # Резервная проверка 2: если файлы лежат в корне outputs/{user_id} или outputs/
+        root_outputs_dir = settings.OUTPUT_DIR / str(current_user.id)
+        if root_outputs_dir.exists():
+            for f in root_outputs_dir.glob("*.xlsx"):
+                data = aggregate_sales_data(root_outputs_dir)
+                break
+
+    return data
+
 

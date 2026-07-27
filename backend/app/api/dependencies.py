@@ -161,6 +161,35 @@ def auto_discover_user_files(db: Session, user_id: int):
                 db.add(new_task)
                 db_changed = True
 
+    # 2.5 Сканируем подпапку отчетов о продажах (outputs/user_id/sales и outputs/sales)
+    sales_dirs = [user_output_dir / "sales", settings.OUTPUT_DIR / "sales"]
+    for s_dir in sales_dirs:
+        if s_dir.exists():
+            for filename in os.listdir(s_dir):
+                filename_nfc = unicodedata.normalize('NFC', filename)
+                file_path = s_dir / filename
+                if not file_path.is_file() or not filename.endswith('.xlsx'):
+                    continue
+                    
+                existing_sales_file = db.query(FileRecord).filter(
+                    FileRecord.user_id == user_id,
+                    FileRecord.filename == filename_nfc,
+                    FileRecord.file_type == 'sales'
+                ).first()
+                
+                if not existing_sales_file:
+                    existing_sales_file = FileRecord(
+                        user_id=user_id,
+                        filename=filename_nfc,
+                        display_name=filename_nfc,
+                        file_type='sales',
+                        file_size=file_path.stat().st_size,
+                        storage_path=str(file_path),
+                        uploaded_at=datetime.fromtimestamp(file_path.stat().st_mtime)
+                    )
+                    db.add(existing_sales_file)
+                    db_changed = True
+
     # 3. Удаление записей о несуществующих на диске файлах (синхронизация)
     all_files = db.query(FileRecord).filter(FileRecord.user_id == user_id).all()
     for f in all_files:

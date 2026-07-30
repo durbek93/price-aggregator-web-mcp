@@ -654,7 +654,7 @@ def get_system_summary(
     output_files = db.query(FileRecord).filter(
         FileRecord.user_id == current_user.id,
         FileRecord.file_type == "output"
-    ).order_by(FileRecord.uploaded_at.desc()).limit(10).all()
+    ).order_by(FileRecord.uploaded_at.desc()).limit(20).all()
 
     input_files = db.query(FileRecord).filter(
         FileRecord.user_id == current_user.id,

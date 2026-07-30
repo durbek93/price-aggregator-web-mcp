@@ -96,15 +96,19 @@ async def collect_latest_files() -> Tuple[bool, int]:
                     if not (low_name.endswith('.xlsx') or low_name.endswith('.xls') or low_name.endswith('.xlsb')):
                         continue
                     
-                    if "100" in low_name:
-                        if not msg_100:
-                            msg_100 = message
-                    else:
-                        if is_promotion:
-                            if "25" in low_name:
+                    if is_grand:
+                        if "price" in low_name or "прайс" in low_name:
+                            if "100" in low_name:
+                                if not msg_100:
+                                    msg_100 = message
+                            else:
                                 if not msg_25:
                                     msg_25 = message
-                        else:  # is_grand
+                    else:  # is_promotion
+                        if "100" in low_name:
+                            if not msg_100:
+                                msg_100 = message
+                        elif "25" in low_name:
                             if not msg_25:
                                 msg_25 = message
                             

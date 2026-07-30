@@ -77,11 +77,64 @@ def auto_discover_user_files(db: Session, user_id: int):
     
     # 1. Сканируем входящие прайсы (uploads)
     if user_upload_dir.exists():
+        from pathlib import Path
         for filename in os.listdir(user_upload_dir):
             filename_nfc = unicodedata.normalize('NFC', filename)
             file_path = user_upload_dir / filename
             if not file_path.is_file():
                 continue
+                
+            # 1.1. Санируем имя файла для авто-обнаружения (чтобы избежать дублей)
+            from app.services.file_service import FileService
+            clean_filename = FileService.sanitize_user_filename(filename_nfc)
+            
+            if clean_filename != filename_nfc:
+                clean_path = user_upload_dir / clean_filename
+                
+                # Если санированный файл уже существует, этот исходный файл считается устаревшим дублем
+                if clean_path.exists():
+                    history_dir = user_upload_dir / "history"
+                    history_dir.mkdir(parents=True, exist_ok=True)
+                    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                    history_filename = f"{Path(clean_filename).stem}_{timestamp}{Path(clean_filename).suffix}"
+                    history_path = history_dir / history_filename
+                    
+                    try:
+                        import shutil
+                        shutil.move(str(file_path), str(history_path))
+                    except Exception:
+                        try:
+                            shutil.copy2(str(file_path), str(history_path))
+                            os.remove(str(file_path))
+                        except Exception:
+                            pass
+                    
+                    # Проверяем, нет ли уже записи в БД для этого дубля в истории
+                    existing_hist = db.query(FileRecord).filter(
+                        FileRecord.user_id == user_id,
+                        FileRecord.filename == history_filename
+                    ).first()
+                    if not existing_hist:
+                        new_file = FileRecord(
+                            user_id=user_id,
+                            filename=history_filename,
+                            display_name=history_filename,
+                            file_type='input_history',
+                            file_size=history_path.stat().st_size if history_path.exists() else file_path.stat().st_size,
+                            storage_path=str(history_path),
+                            uploaded_at=datetime.fromtimestamp(file_path.stat().st_mtime)
+                        )
+                        db.add(new_file)
+                        db_changed = True
+                    continue
+                else:
+                    # Если санированного файла на диске нет, переименовываем текущий файл на диске
+                    try:
+                        os.rename(str(file_path), str(clean_path))
+                        filename_nfc = clean_filename
+                        file_path = clean_path
+                    except Exception:
+                        pass
                 
             existing = db.query(FileRecord).filter(
                 FileRecord.user_id == user_id,

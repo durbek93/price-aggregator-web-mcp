@@ -323,7 +323,9 @@ def read_price_table(
         read_preset is None and "Хожи Акбар Фарм" in path.stem
     )
     use_grand = read_preset == "grand_farm" or (
-        read_preset is None and "Гранд Фарм" in path.stem and engine == "openpyxl"
+        read_preset is None 
+        and ("Гранд Фарм" in path.stem or "GRAND PHARM" in path.stem.upper() or "GRAND FARM" in path.stem.upper()) 
+        and engine == "openpyxl"
     )
 
     if use_khoji:

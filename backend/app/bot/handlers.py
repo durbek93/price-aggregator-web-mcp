@@ -5,8 +5,8 @@ import urllib.request
 import urllib.error
 import asyncio
 from datetime import datetime
-from pathlib import Path
-
+import re
+from typing import List, Optional, Dict
 from aiogram import Router, Bot, F, html
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery
@@ -222,18 +222,203 @@ async def handle_clear_files_callback(callback: CallbackQuery) -> None:
         db.close()
 
 
+@router.callback_query(F.data.startswith("confirm_purge:"))
+async def handle_confirm_purge_callback(callback: CallbackQuery) -> None:
+    """Подтверждение физической очистки файлов за указанный период."""
+    tg_user = callback.from_user
+    user = get_or_create_user(telegram_id=tg_user.id)
+    
+    if tg_user.id not in settings.allowed_telegram_ids_set:
+        await callback.answer("❌ У вас нет прав для выполнения этой операции.", show_alert=True)
+        return
+        
+    period_token = callback.data.split(":", 1)[1]
+    months_list = period_token.split("-")
+    
+    db = SessionLocal()
+    try:
+        from datetime import datetime
+        query = db.query(FileRecord).filter(FileRecord.user_id == user.id)
+        
+        # Фильтруем по месяцам
+        month_conditions = []
+        for m_str in months_list:
+            try:
+                parts = m_str.split(".")
+                if len(parts) == 2:
+                    m_num, y_num = int(parts[0]), int(parts[1])
+                    start_dt = datetime(y_num, m_num, 1)
+                    if m_num == 12:
+                        end_dt = datetime(y_num + 1, 1, 1)
+                    else:
+                        end_dt = datetime(y_num, m_num + 1, 1)
+                    query = query.filter(FileRecord.uploaded_at >= start_dt, FileRecord.uploaded_at < end_dt)
+            except Exception:
+                pass
+                
+        files_to_delete = query.all()
+        if not files_to_delete:
+            await callback.answer("ℹ️ Файлы не найдены.")
+            await callback.message.edit_text("ℹ️ Файлы за выбранный период не найдены или уже удалены.")
+            return
+
+        total_bytes = 0
+        deleted_count = 0
+        for f in files_to_delete:
+            f_size = f.file_size or 0
+            if os.path.exists(f.storage_path):
+                try:
+                    f_size = os.path.getsize(f.storage_path)
+                    os.remove(f.storage_path)
+                except Exception as e:
+                    logger.error(f"Failed to delete file {f.storage_path}: {e}")
+            total_bytes += f_size
+            deleted_count += 1
+            db.delete(f)
+
+        db.commit()
+        freed_mb = round(total_bytes / (1024 * 1024), 2)
+        months_display = ", ".join(months_list)
+        
+        await callback.answer("✅ Очистка завершена!", show_alert=True)
+        await callback.message.edit_text(
+            f"✅ {html.bold('Очистка памяти выполнена успешно!')}\n\n"
+            f"📅 Период: {html.code(months_display)}\n"
+            f"🗑 Удалено файлов: {html.bold(str(deleted_count))} шт.\n"
+            f"💾 Освобождено диска: {html.bold(str(freed_mb))} МБ"
+        )
+    except Exception as e:
+        logger.exception(f"Error during purge execution: {e}")
+        await callback.answer("❌ Ошибка при удалении файлов.", show_alert=True)
+    finally:
+        db.close()
+
+
+@router.callback_query(F.data == "cancel_purge")
+async def handle_cancel_purge_callback(callback: CallbackQuery) -> None:
+    """Отмена процедуры очистки памяти."""
+    await callback.answer("Операция отменена.")
+    await callback.message.edit_text("❌ Операция очистки памяти отменена пользователем.")
+
+
+def parse_purge_months(text: str) -> List[str]:
+    """Извлекает список месяцев формата MM.YYYY из текста или названий месяцев на русском."""
+    months = []
+    # 1. Поиск совпадений вида 05.2026 или 05/2026
+    for m, y in re.findall(r"\b(0[1-9]|1[0-2])[\.\/](20\d{2})\b", text):
+        months.append(f"{m}.{y}")
+
+    # 2. Поиск по русским названиям месяцев
+    month_map = {
+        "январ": "01", "феврал": "02", "март": "03", "апрел": "04",
+        "май": "05", "мая": "05", "июн": "06", "июл": "07",
+        "август": "08", "сентябр": "09", "октябр": "10", "ноябр": "11", "декабр": "12"
+    }
+    years = re.findall(r"\b(20\d{2})\b", text)
+    year = years[0] if years else "2026"
+    for name, num in month_map.items():
+        if name in text.lower():
+            m_str = f"{num}.{year}"
+            if m_str not in months:
+                months.append(m_str)
+    return months
+
+
 @router.message(F.text)
 async def handle_bot_mention_in_group(message: Message) -> None:
-    """Обрабатывает упоминание бота-репортера в группе от разрешенных администраторов."""
-    text = message.text or ""
-    is_trigger = (
-        "@lightprice_aggr_bot" in text.lower() or 
-        "агрегатор" in text.lower() or 
-        "сборщик" in text.lower() or 
-        "сборка" in text.lower() or 
-        text.strip().lower().startswith(("/collect", "/collect@lightprice_aggr_bot"))
+    """Обрабатывает команды и упоминания бота-репортера от разрешенных пользователей."""
+    text = (message.text or "").strip()
+    low_text = text.lower()
+    
+    # 1. Проверяем команды очистки памяти (/clean, /purge, "очисти память")
+    is_clean_trigger = (
+        low_text.startswith(("/clean", "/purge", "/clean@lightprice_aggr_bot", "/purge@lightprice_aggr_bot")) or
+        "очисти память" in low_text or
+        "очистить память" in low_text or
+        "удали прайсы за" in low_text
     )
-    if not is_trigger:
+    
+    if is_clean_trigger:
+        tg_user = message.from_user
+        if not tg_user or tg_user.id not in settings.allowed_telegram_ids_set:
+            logger.warning(f"Unauthorized clean attempt from user {tg_user.id if tg_user else 'unknown'}")
+            return
+            
+        months = parse_purge_months(text)
+        if not months:
+            await message.reply(
+                "ℹ️ Укажите месяц или период для очистки в формате MM.YYYY.\n\n"
+                "Примеры использования:\n"
+                "• `/clean 05.2026` (за май 2026)\n"
+                "• `/clean 05.2026-06.2026` (за май и июнь 2026)\n"
+                "• `/clean май и июнь 2026`",
+                parse_mode="Markdown"
+            )
+            return
+
+        months_display = ", ".join(months)
+        user = get_or_create_user(telegram_id=tg_user.id)
+        
+        # Расчет предварительного объема для удаления
+        db = SessionLocal()
+        try:
+            from datetime import datetime
+            query = db.query(FileRecord).filter(FileRecord.user_id == user.id)
+            for m_str in months:
+                try:
+                    parts = m_str.split(".")
+                    if len(parts) == 2:
+                        m_num, y_num = int(parts[0]), int(parts[1])
+                        start_dt = datetime(y_num, m_num, 1)
+                        end_dt = datetime(y_num + 1, 1, 1) if m_num == 12 else datetime(y_num, m_num + 1, 1)
+                        query = query.filter(FileRecord.uploaded_at >= start_dt, FileRecord.uploaded_at < end_dt)
+                except Exception:
+                    pass
+                    
+            files_found = query.all()
+            if not files_found:
+                await message.reply(f"ℹ️ Файлы за период {html.code(months_display)} не найдены в базе данных.")
+                return
+                
+            total_bytes = sum(f.file_size or 0 for f in files_found)
+            total_mb = round(total_bytes / (1024 * 1024), 2)
+            
+            period_token = "-".join(months)
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="⚠️ Подтвердить удаление", callback_data=f"confirm_purge:{period_token}"),
+                    InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_purge")
+                ]
+            ])
+            
+            await message.reply(
+                f"⚠️ {html.bold('Подтверждение очистки дисковой памяти')}\n\n"
+                f"📅 Период: {html.code(months_display)}\n"
+                f"📦 Найдено файлов: {html.bold(str(len(files_found)))} шт.\n"
+                f"💾 Занимаемый объем: {html.bold(str(total_mb))} МБ\n\n"
+                f"Вы действительно хотите удалить эти файлы с диска и из БД?",
+                reply_markup=keyboard
+            )
+            return
+        except Exception as e:
+            logger.exception(f"Error preparing purge preview: {e}")
+            await message.reply("❌ Ошибка при подготовке сведений об очистке.")
+            return
+        finally:
+            db.close()
+
+    # 2. Проверяем команды скачивания прайсов (/fetch, /download_prices, /collect)
+    is_fetch_trigger = (
+        "@lightprice_aggr_bot" in low_text or 
+        "агрегатор" in low_text or 
+        "сборщик" in low_text or 
+        "сборка" in low_text or 
+        "скачай прайсы" in low_text or
+        "скачай последние прайсы" in low_text or
+        "загрузи прайсы" in low_text or
+        low_text.startswith(("/collect", "/fetch", "/download_prices"))
+    )
+    if not is_fetch_trigger:
         return
         
     tg_user = message.from_user
@@ -245,12 +430,26 @@ async def handle_bot_mention_in_group(message: Message) -> None:
         logger.warning(f"User {tg_user.id} ({tg_user.full_name}) tried to trigger collection but is not allowed.")
         return
         
-    logger.info(f"User {tg_user.id} triggered collection via bot mention.")
-    await message.reply("⏳ Запрос на сбор прайс-листов получен. Начинаю опрашивать каналы дистрибьюторов...")
+    is_fetch_only = (
+        low_text.startswith(("/fetch", "/download_prices")) or
+        "скачай прайсы" in low_text or
+        "скачай последние прайсы" in low_text or
+        "загрузи прайсы" in low_text
+    )
     
-    # Отправляем POST запрос к Scout Agent для сбора прайсов
+    endpoint_path = "/fetch" if is_fetch_only else "/collect"
+    
+    if is_fetch_only:
+        start_msg = "⏳ Запрос на скачивание прайс-листов получен. Начинаю скачивать свежие прайсы (100% / 25%) со всех каналов дистрибьюторов..."
+    else:
+        start_msg = "⏳ Запрос на сбор прайс-листов получен. Начинаю опрашивать каналы дистрибьюторов..."
+        
+    logger.info(f"User {tg_user.id} triggered collection (is_fetch_only={is_fetch_only}, endpoint={endpoint_path}).")
+    await message.answer(start_msg)
+    
+    # Отправляем POST запрос к Scout Agent
     try:
-        url = "http://scout_agent:8080/collect"
+        url = f"http://scout_agent:8080{endpoint_path}"
         req = urllib.request.Request(url, method="POST")
         req.add_header("X-Internal-API-Key", settings.INTERNAL_API_KEY)
         
@@ -264,15 +463,15 @@ async def handle_bot_mention_in_group(message: Message) -> None:
                 
         status, body = await loop.run_in_executor(None, _send_request)
         if status == 200:
-            logger.info("Successfully triggered Scout Agent for on-demand collection.")
+            logger.info(f"Successfully triggered Scout Agent endpoint {endpoint_path}.")
         else:
             logger.error(f"Failed to trigger Scout Agent. Status: {status}, Response: {body}")
-            await message.reply("❌ Ошибка при взаимодействии с Агентом-Сборщиком (Scout Agent).")
+            await message.answer("❌ Ошибка при взаимодействии с Агентом-Сборщиком (Scout Agent).")
     except urllib.error.HTTPError as e:
         logger.error(f"HTTPError triggering Scout Agent: {e.code} - {e.reason}")
-        await message.reply("❌ Ошибка при взаимодействии с Агентом-Сборщиком (Scout Agent).")
+        await message.answer("❌ Ошибка при взаимодействии с Агентом-Сборщиком (Scout Agent).")
     except Exception as e:
         logger.exception(f"Exception while contacting Scout Agent: {e}")
-        await message.reply(f"❌ Не удалось связаться с Агентом-Сборщиком: {str(e)}")
+        await message.answer(f"❌ Не удалось связаться с Агентом-Сборщиком: {str(e)}")
 
 

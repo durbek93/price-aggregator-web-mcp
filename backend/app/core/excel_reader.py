@@ -170,19 +170,31 @@ def resolve_price_column_for_sheet(df: pd.DataFrame, path: Path, price_candidate
         
     elif "biotek" in name_low or "биотек" in name_low:
         found_col = None
-        for col in df.columns:
-            col_str = str(col).strip()
-            if "-0.03" in col_str or "-3" in col_str or "-3%" in col_str or "-0.04" in col_str or "-4" in col_str or "-4%" in col_str:
-                found_col = col
-                break
-            try:
-                f_val = float(col)
-                if abs(f_val + 0.03) < 0.001 or abs(f_val + 3.0) < 0.001 or abs(f_val + 0.04) < 0.001 or abs(f_val + 4.0) < 0.001:
+        # First check for explicit columns like Цена-4, Цена 4, -4, Цена-3, Цена 3, -3
+        target_names = ["цена-4", "цена 4", "цена - 4", "-4", "цена-3", "цена 3", "цена - 3", "-3", "цена-2", "цена 2", "цена - 2", "-2"]
+        for target in target_names:
+            for col in df.columns:
+                c_norm = str(col).lower().replace("–", "-").replace("—", "-").replace("−", "-").strip()
+                if c_norm == target or c_norm.replace(" ", "") == target.replace(" ", ""):
                     found_col = col
                     break
-            except (ValueError, TypeError):
-                pass
+            if found_col:
+                break
                 
+        if not found_col:
+            for col in df.columns:
+                col_str = str(col).strip()
+                if "-0.03" in col_str or "-3" in col_str or "-3%" in col_str or "-0.04" in col_str or "-4" in col_str or "-4%" in col_str:
+                    found_col = col
+                    break
+                try:
+                    f_val = float(col)
+                    if abs(f_val + 0.03) < 0.001 or abs(f_val + 3.0) < 0.001 or abs(f_val + 0.04) < 0.001 or abs(f_val + 4.0) < 0.001:
+                        found_col = col
+                        break
+                except (ValueError, TypeError):
+                    pass
+                    
         if not found_col:
             for r_idx in range(min(10, len(df))):
                 row = df.iloc[r_idx]

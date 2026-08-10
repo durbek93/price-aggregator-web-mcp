@@ -114,6 +114,180 @@ def clear_all_files(
     return {"message": "Все загруженные прайс-листы успешно удалены"}
 
 
+@router.get("/purge-preview")
+def purge_preview(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    month: Optional[str] = None,
+    file_type: Optional[str] = "all",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Предварительный просмотр файлов, которые будут удалены за указанный период."""
+    from datetime import datetime, timedelta
+
+    query = db.query(FileRecord).filter(FileRecord.user_id == current_user.id)
+    if file_type and file_type != "all":
+        if file_type == "input":
+            query = query.filter(FileRecord.file_type.in_(["input", "input_history"]))
+        else:
+            query = query.filter(FileRecord.file_type == file_type)
+
+    if month:
+        months_list = [m.strip() for m in month.split(",") if m.strip()]
+        for m_str in months_list:
+            try:
+                parts = m_str.split(".")
+                if len(parts) == 2:
+                    m_num, y_num = int(parts[0]), int(parts[1])
+                    start_dt = datetime(y_num, m_num, 1)
+                    if m_num == 12:
+                        end_dt = datetime(y_num + 1, 1, 1)
+                    else:
+                        end_dt = datetime(y_num, m_num + 1, 1)
+                    query = query.filter(FileRecord.uploaded_at >= start_dt, FileRecord.uploaded_at < end_dt)
+            except Exception:
+                pass
+    elif date_from or date_to:
+        if date_from:
+            try:
+                dt_from = datetime.strptime(date_from, "%Y-%m-%d")
+                query = query.filter(FileRecord.uploaded_at >= dt_from)
+            except ValueError:
+                try:
+                    dt_from = datetime.strptime(date_from, "%d.%m.%Y")
+                    query = query.filter(FileRecord.uploaded_at >= dt_from)
+                except Exception:
+                    pass
+        if date_to:
+            try:
+                dt_to = datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)
+                query = query.filter(FileRecord.uploaded_at < dt_to)
+            except ValueError:
+                try:
+                    dt_to = datetime.strptime(date_to, "%d.%m.%Y") + timedelta(days=1)
+                    query = query.filter(FileRecord.uploaded_at < dt_to)
+                except Exception:
+                    pass
+
+    files_found = query.all()
+    total_bytes = 0
+    file_list = []
+    for f in files_found:
+        size = f.file_size or 0
+        if os.path.exists(f.storage_path):
+            try:
+                size = os.path.getsize(f.storage_path)
+            except Exception:
+                pass
+        total_bytes += size
+        file_list.append({
+            "id": f.id,
+            "filename": f.display_name or f.filename,
+            "file_type": f.file_type,
+            "size_mb": round(size / (1024 * 1024), 2),
+            "uploaded_at": f.uploaded_at.isoformat()
+        })
+
+    return {
+        "count": len(files_found),
+        "total_mb": round(total_bytes / (1024 * 1024), 2),
+        "files": file_list
+    }
+
+
+@router.delete("/purge")
+def purge_files_by_period(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    month: Optional[str] = None,
+    file_type: Optional[str] = "all",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Очищает файлы за выбранный период дат или месяцев с диска и из БД."""
+    from datetime import datetime, timedelta
+
+    query = db.query(FileRecord).filter(FileRecord.user_id == current_user.id)
+    if file_type and file_type != "all":
+        if file_type == "input":
+            query = query.filter(FileRecord.file_type.in_(["input", "input_history"]))
+        else:
+            query = query.filter(FileRecord.file_type == file_type)
+
+    if month:
+        months_list = [m.strip() for m in month.split(",") if m.strip()]
+        for m_str in months_list:
+            try:
+                parts = m_str.split(".")
+                if len(parts) == 2:
+                    m_num, y_num = int(parts[0]), int(parts[1])
+                    start_dt = datetime(y_num, m_num, 1)
+                    if m_num == 12:
+                        end_dt = datetime(y_num + 1, 1, 1)
+                    else:
+                        end_dt = datetime(y_num, m_num + 1, 1)
+                    query = query.filter(FileRecord.uploaded_at >= start_dt, FileRecord.uploaded_at < end_dt)
+            except Exception:
+                pass
+    elif date_from or date_to:
+        if date_from:
+            try:
+                dt_from = datetime.strptime(date_from, "%Y-%m-%d")
+                query = query.filter(FileRecord.uploaded_at >= dt_from)
+            except ValueError:
+                try:
+                    dt_from = datetime.strptime(date_from, "%d.%m.%Y")
+                    query = query.filter(FileRecord.uploaded_at >= dt_from)
+                except Exception:
+                    pass
+        if date_to:
+            try:
+                dt_to = datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)
+                query = query.filter(FileRecord.uploaded_at < dt_to)
+            except ValueError:
+                try:
+                    dt_to = datetime.strptime(date_to, "%d.%m.%Y") + timedelta(days=1)
+                    query = query.filter(FileRecord.uploaded_at < dt_to)
+                except Exception:
+                    pass
+
+    files_to_delete = query.all()
+    if not files_to_delete:
+        return {
+            "message": "Файлы за указанный период не найдены",
+            "deleted_count": 0,
+            "freed_mb": 0.0
+        }
+
+    total_bytes = 0
+    deleted_count = 0
+    deleted_filenames = []
+
+    for f in files_to_delete:
+        f_size = f.file_size or 0
+        if os.path.exists(f.storage_path):
+            try:
+                f_size = os.path.getsize(f.storage_path)
+                os.remove(f.storage_path)
+            except Exception:
+                pass
+        total_bytes += f_size
+        deleted_count += 1
+        deleted_filenames.append(f.display_name or f.filename)
+        db.delete(f)
+
+    db.commit()
+    freed_mb = round(total_bytes / (1024 * 1024), 2)
+
+    return {
+        "message": f"Успешно удалено {deleted_count} файлов за указанный период.",
+        "deleted_count": deleted_count,
+        "freed_mb": freed_mb,
+        "deleted_filenames": deleted_filenames
+    }
+
+
 @router.delete("/{file_id}")
 def delete_file(
     file_id: int,

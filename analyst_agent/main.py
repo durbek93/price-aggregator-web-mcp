@@ -273,10 +273,16 @@ async def handle_new_report_notification(message: types.Message):
         "@lightprice_analyst_bot" in text_low or 
         "аналитик" in text_low
     )
-    is_from_main_bot = (message.from_user and message.from_user.id == config.MAIN_BOT_ID)
+    is_direct_command = (
+        text_low.startswith(("/fetch", "/download_prices", "/clean", "/purge")) or
+        "скачай последние прайсы" in text_low or
+        "скачай прайсы" in text_low or
+        "загрузи прайсы" in text_low or
+        "очисти память" in text_low
+    )
     
-    if not is_mentioned and not is_from_main_bot:
-        logger.info("Ignored message: not from main bot and bot is not mentioned.")
+    if not is_mentioned and not is_from_main_bot and not is_direct_command:
+        logger.info("Ignored message: not from main bot, not mentioned, and not a direct command.")
         return
         
     # 4. Проверяем триггерный текст от бэкенда или ключевые слова (если бот не был прямо упомянут)
@@ -439,6 +445,45 @@ async def handle_new_report_notification(message: types.Message):
                         doc = BufferedInputFile(pptx_bytes, filename="sales_analytics.pptx")
                         await message.reply_document(document=doc, caption="📽 <b>Презентация по продажам (.pptx)</b>", parse_mode="HTML")
 
+                return
+
+            elif req_type == "fetch_prices":
+                logger.info("Handling fetch_prices request in Analyst Agent")
+                await safe_delete_message(status_msg)
+                
+                # Запускаем сборщик Scout Agent по HTTP
+                try:
+                    import urllib.request
+                    url = "http://scout_agent:8080/fetch"
+                    req = urllib.request.Request(url, method="POST")
+                    req.add_header("X-Internal-API-Key", config.INTERNAL_API_KEY)
+                    
+                    loop = asyncio.get_running_loop()
+                    def _send():
+                        with urllib.request.urlopen(req, timeout=10.0) as resp:
+                            return resp.status
+                    st = await loop.run_in_executor(None, _send)
+                    if st == 200:
+                        await message.reply("⏳ <b>Запрос на скачивание прайс-листов получен.</b> Начинаю скачивать свежие прайсы (100% / 25%) со всех каналов дистрибьюторов...", parse_mode="HTML")
+                    else:
+                        await message.reply("❌ Ошибка при взаимодействии с Агентом-Сборщиком (Scout Agent).")
+                except Exception as ex:
+                    logger.exception(f"Error contacting Scout Agent: {ex}")
+                    await message.reply(f"❌ Не удалось связаться со Scout Agent: {ex}")
+                return
+
+            elif req_type == "purge_memory":
+                logger.info("Handling purge_memory request in Analyst Agent")
+                await safe_delete_message(status_msg)
+                await message.reply(
+                    "⚠️ <b>Очистка памяти от старых прайс-листов</b>\n\n"
+                    "Вы можете запустить процедуру очистки командой:\n"
+                    "• <code>/clean 05.2026</code> (за май 2026)\n"
+                    "• <code>/clean 05.2026-06.2026</code> (за май и июнь 2026)\n"
+                    "• <code>/clean 01.05.2026-30.06.2026</code>\n\n"
+                    "Бот покажет найденный объем файлов и запросит интерактивное подтверждение перед удалением.",
+                    parse_mode="HTML"
+                )
                 return
 
             # Шаг 1: Запрашиваем дельту цен с бэкенда для общего отчета

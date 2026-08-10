@@ -587,7 +587,10 @@ def run_svodny_horizontal(
                 p25_col = None
                 p100_col = None
                 
-                if is_100:
+                if col_100_found and col_25_found:
+                    p100_col = col_100_found
+                    p25_col = col_25_found
+                elif is_100:
                     # Parse as 100% file
                     p100_col = col_100_found
                     if not p100_col:
@@ -620,49 +623,60 @@ def run_svodny_horizontal(
                 p25_col = "Цена" if "Цена" in df_file.columns else pick_price_column(list(df_file.columns), price_c)
                 p100_col = None
                 found_col = None
-                # Check for -4% first, then fallback to -3%
-                for pct in [0.04, 0.03]:
-                    pct_str_1 = f"-{pct}"
-                    pct_str_2 = f"-{int(pct * 100)}"
-                    pct_str_3 = f"-{int(pct * 100)}%"
-                    
-                    # 1. Check in column names first
+                
+                # 1. Check for explicit columns like Цена-4, Цена 4, -4, Цена-3, Цена 3, -3
+                target_names = ["цена-4", "цена 4", "цена - 4", "-4", "цена-3", "цена 3", "цена - 3", "-3", "цена-2", "цена 2", "цена - 2", "-2"]
+                for target in target_names:
                     for col in df_file.columns:
-                        col_str = str(col).strip()
-                        if any(x in col_str for x in [pct_str_1, pct_str_2, pct_str_3]):
+                        c_norm = str(col).lower().replace("–", "-").replace("—", "-").replace("−", "-").strip()
+                        if c_norm == target or c_norm.replace(" ", "") == target.replace(" ", ""):
                             found_col = col
                             break
-                        try:
-                            f_val = float(col)
-                            if abs(f_val + pct) < 0.001 or abs(f_val + pct * 100) < 0.001:
-                                found_col = col
-                                break
-                        except (ValueError, TypeError):
-                            pass
-                            
                     if found_col:
                         break
                         
-                    # 2. Check in data rows
-                    for r_idx in range(min(10, len(df_file))):
-                        row = df_file.iloc[r_idx]
+                # 2. Fallback: Check for -4% or -3% discount strings
+                if not found_col:
+                    for pct in [0.04, 0.03]:
+                        pct_str_1 = f"-{pct}"
+                        pct_str_2 = f"-{int(pct * 100)}"
+                        pct_str_3 = f"-{int(pct * 100)}%"
+                        
                         for col in df_file.columns:
-                            val = row.get(col)
-                            if val is not None:
-                                val_str = str(val).strip()
-                                if any(x in val_str for x in [pct_str_1, pct_str_2, pct_str_3]):
+                            col_str = str(col).strip()
+                            if any(x in col_str for x in [pct_str_1, pct_str_2, pct_str_3]):
+                                found_col = col
+                                break
+                            try:
+                                f_val = float(col)
+                                if abs(f_val + pct) < 0.001 or abs(f_val + pct * 100) < 0.001:
                                     found_col = col
                                     break
-                                try:
-                                    if abs(float(val) + pct) < 0.001:
-                                        found_col = col
-                                        break
-                                except (ValueError, TypeError):
-                                    pass
+                            except (ValueError, TypeError):
+                                pass
+                                
                         if found_col:
                             break
-                    if found_col:
-                        break
+                            
+                        for r_idx in range(min(10, len(df_file))):
+                            row = df_file.iloc[r_idx]
+                            for col in df_file.columns:
+                                val = row.get(col)
+                                if val is not None:
+                                    val_str = str(val).strip()
+                                    if any(x in val_str for x in [pct_str_1, pct_str_2, pct_str_3]):
+                                        found_col = col
+                                        break
+                                    try:
+                                        if abs(float(val) + pct) < 0.001:
+                                            found_col = col
+                                            break
+                                    except (ValueError, TypeError):
+                                        pass
+                            if found_col:
+                                break
+                        if found_col:
+                            break
                 p100_col = found_col
             
             if not name_col:

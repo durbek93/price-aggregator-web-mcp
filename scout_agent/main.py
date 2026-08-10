@@ -54,15 +54,34 @@ def clean_distributor_name(title: str) -> str:
     t = " ".join(t.split())
     return t or title
 
-async def collect_latest_files() -> Tuple[bool, int]:
+async def send_scout_telegram_report(text: str):
+    """Отправляет отчёт о скачанных файлах в групповой чат Telegram."""
+    bot_token = config.TELEGRAM_BOT_TOKEN or os.getenv("TELEGRAM_BOT_TOKEN", "")
+    group_id = config.TELEGRAM_GROUP_ID or os.getenv("TELEGRAM_GROUP_ID", "")
+    if not bot_token or not group_id:
+        logger.warning("TELEGRAM_BOT_TOKEN or TELEGRAM_GROUP_ID not configured for scout notification.")
+        return
+    try:
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                url,
+                json={"chat_id": group_id, "text": text, "parse_mode": "HTML"},
+                timeout=15.0
+            )
+    except Exception as e:
+        logger.error(f"Failed to send Telegram report from Scout Agent: {e}")
+
+
+async def collect_latest_files(trigger_aggregation: bool = True) -> Tuple[bool, int]:
     """
-    Опрашивает каналы дистрибьюторов (20 последних сообщений в каждом),
-    выбирает лучший прайс-лист со 100% предоплатой, скачивает,
-    переименовывает в {Cleaned_Distributor_Name}.xlsx и загружает на бэкенд.
+    Опрашивает каналы дистрибьюторов, скачивает самые свежие прайс-листы (100% и 25%),
+    загружает их на бэкенд и (опционально) запускает построение сводного прайса.
     """
-    logger.info("Starting collection of latest files from distributor channels...")
+    logger.info(f"Starting collection of latest files from distributor channels (trigger_aggregation={trigger_aggregation})...")
     uploaded_ids = []
     downloaded_paths = []
+    download_summary: Dict[str, List[str]] = {}
     
     # Пре-кэшируем диалоги, чтобы Pyrogram мог разрешить ID каналов, которых нет в локальной БД сессии
     try:
@@ -84,6 +103,9 @@ async def collect_latest_files() -> Tuple[bool, int]:
             is_grand = (str(channel) == "-1001180237503" or channel == -1001180237503)
             is_luxe = (str(channel) == "vaksinabot" or "luxe" in str(cleaned_name).lower() or "люкс" in str(cleaned_name).lower())
             is_promotion = ("promotion" in str(cleaned_name).lower() or "промоушен" in str(cleaned_name).lower())
+            is_biotek = (str(channel) == "-1003861704035" or channel == -1003861704035 or "biotek" in str(cleaned_name).lower() or "биотек" in str(cleaned_name).lower())
+            if is_biotek:
+                cleaned_name = "BIOTEK FARM"
             
             if is_grand or is_promotion:
                 msg_100 = None
@@ -138,6 +160,7 @@ async def collect_latest_files() -> Tuple[bool, int]:
                     file_id = await upload_file_to_backend(path)
                     if file_id:
                         uploaded_ids.append(file_id)
+                        download_summary.setdefault(cleaned_name, []).append(target_name)
                 continue
                 
             elif is_luxe:
@@ -178,6 +201,7 @@ async def collect_latest_files() -> Tuple[bool, int]:
                     file_id = await upload_file_to_backend(path)
                     if file_id:
                         uploaded_ids.append(file_id)
+                        download_summary.setdefault(cleaned_name, []).append(target_name)
                 continue
 
             candidates = []
@@ -189,30 +213,39 @@ async def collect_latest_files() -> Tuple[bool, int]:
                 filename = doc.file_name or ""
                 lower_filename = filename.lower()
                 
-                # 1. Проверка формата Excel
                 if not (lower_filename.endswith('.xlsx') or lower_filename.endswith('.xls') or lower_filename.endswith('.xlsb')):
                     continue
                 
-                # Очищаем имя от неразрывных пробелов и т.д.
                 caption_text = message.caption or ""
-                logger.info(f"Excel file found: '{filename}' (caption: '{caption_text}')")
-                
-                # 2. Умный региональный фильтр: исключаем другие регионы, если нет упоминания Ташкента
-                # Исключаем chat_title из проверки, чтобы не блокировать каналы с региональными именами (например, Biotek Fergana)
                 text_to_check = (filename + " " + caption_text).lower()
-                other_regions = ["самарканд", "samarkand", "андижан", "andijan", "бухар", "bukhara", "ферган", "fergana", "наманган", "namangan", "хорезм", "khorezm", "нукус", "nukus", "карши", "karshi", "коканд", "kokand", "джизак", "jizzakh", "навои", "navoi", "термез", "termez", "ургенч", "urgench", "хива", "khiva"]
-                has_other_region = any(r in text_to_check for r in other_regions)
-                has_tashkent = any(t in text_to_check for t in ["ташкент", "tashkent"])
+                fergana_keywords = [
+                    "ферган", "фарғон", "фаргон", "fargona", "farg'ona", "fargʼona"
+                ]
+                other_regions = [
+                    "самарканд", "samarkand", "андижан", "andijan", "бухар", "bukhara",
+                    "наманган", "namangan", "хорезм", "khorezm", "нукус", "nukus",
+                    "карши", "karshi", "коканд", "kokand", "джизак", "jizzakh",
+                    "навои", "navoi", "термез", "termez", "ургенч", "urgench", "хива", "khiva"
+                ]
+                tashkent_keywords = ["ташкент", "тошкент", "tashkent", "toshkent"]
                 
-                if has_other_region and not has_tashkent:
-                    logger.info(f"File '{filename}' ignored (matches other region and doesn't contain Tashkent/Ташкент).")
+                has_fergana = any(f in text_to_check for f in fergana_keywords)
+                has_other_region = any(r in text_to_check for r in other_regions)
+                has_tashkent = any(t in text_to_check for t in tashkent_keywords)
+                
+                if not is_biotek and has_other_region and not (has_fergana or has_tashkent):
+                    logger.info(f"File '{filename}' ignored (matches other region '{text_to_check}' and doesn't contain Fergana/Tashkent).")
                     continue
                 
-                # 3. Скоринг для выбора основного 100% прайса
                 score = 100.0
                 
-                # Акции / Распродажи / Приходы / Дефициты
-                # Используем регулярное выражение с границами слов, чтобы слово "promotion" не матчилось на "promo"
+                # Бонус за Фергану
+                if has_fergana:
+                    score += 50.0
+                elif has_tashkent:
+                    score += 20.0
+                elif has_other_region:
+                    score -= 70.0
                 promo_pattern = re.compile(
                     r"\b(?:акци|скидк|распродаж|уцен|promo\b|action\b|sale\b|приход|остатк|бонус|bonus\b|презентац|косметик|гигиен|аптеч|дефицит|ограничен|спец)",
                     re.IGNORECASE
@@ -220,32 +253,26 @@ async def collect_latest_files() -> Tuple[bool, int]:
                 if promo_pattern.search(lower_filename) or promo_pattern.search(caption_text.lower()):
                     score -= 60.0
                         
-                # 25% предоплата / отсрочка
                 postpay_keywords = ["25%", "25 %", "25процент", "25 отсроч", "25 отср", "отсроч", "отср"]
                 for kw in postpay_keywords:
                     if kw in lower_filename or kw in caption_text.lower():
                         score -= 80.0
                         break
                         
-                # 100% предоплата / без отсрочки
                 prepay_keywords = ["100%", "100 %", "100процент", "100", "без отсрочки", "предоплат", "предопл", "без отср"]
                 for kw in prepay_keywords:
                     if kw in lower_filename or kw in caption_text.lower():
                         score += 30.0
                         break
                         
-                # Упоминание прайс/основной
                 main_keywords = ["прайс", "price", "основной", "main"]
                 for kw in main_keywords:
                     if kw in lower_filename:
                         score += 20.0
                         break
                         
-                # Бонус за свежесть (message.date.timestamp() / 86400.0)
                 score += (message.date.timestamp() / 86400.0)
-                
                 candidates.append((score, message))
-                logger.info(f"Found candidate: '{filename}' | Score: {score:.2f}")
                 
             if not candidates:
                 logger.warning(f"No valid price list candidates found in channel {channel}")
@@ -254,8 +281,6 @@ async def collect_latest_files() -> Tuple[bool, int]:
             candidates.sort(key=lambda x: x[0], reverse=True)
             best_score, best_message = candidates[0]
             best_doc = best_message.document
-            
-            logger.info(f"Selected best price list: '{best_doc.file_name}' with score {best_score:.2f}")
             
             ext = Path(best_doc.file_name).suffix.lower()
             temp_filename = f"{cleaned_name}{ext}"
@@ -267,17 +292,37 @@ async def collect_latest_files() -> Tuple[bool, int]:
             file_id = await upload_file_to_backend(path)
             if file_id:
                 uploaded_ids.append(file_id)
+                download_summary.setdefault(cleaned_name, []).append(temp_filename)
                 
         except Exception as e:
             logger.exception(f"Error processing channel {channel}: {e}")
             
-    # Запускаем сборку
+    # В зависимости от флага trigger_aggregation либо вызываем сборку, либо отправляем отчёт о скачивании
     success = False
     if uploaded_ids:
-        logger.info(f"Successfully collected and uploaded {len(uploaded_ids)} files. Triggering aggregation...")
-        success = await trigger_aggregation_task(uploaded_ids)
+        if trigger_aggregation:
+            logger.info(f"Successfully collected and uploaded {len(uploaded_ids)} files. Triggering aggregation...")
+            success = await trigger_aggregation_task(uploaded_ids)
+        else:
+            logger.info(f"Successfully collected and uploaded {len(uploaded_ids)} files (download-only). Sending Telegram report...")
+            success = True
+            lines = [
+                "✅ <b>Скачивание прайс-листов завершено!</b>\n",
+                "📋 <b>Скачанные прайсы по каналам:</b>"
+            ]
+            for dist_name, file_names in download_summary.items():
+                files_str = ", ".join(f"<code>{fn}</code>" for fn in file_names)
+                lines.append(f"• <b>{dist_name}</b>: {files_str}")
+            
+            lines.append(f"\n📊 <b>Итого скачано и сохранено на сервере:</b> {len(uploaded_ids)} файлов.")
+            lines.append("<i>Сводный прайс-лист не формировался.</i>")
+            
+            report_text = "\n".join(lines)
+            await send_scout_telegram_report(report_text)
     else:
         logger.warning("No files were successfully collected and uploaded.")
+        if not trigger_aggregation:
+            await send_scout_telegram_report("⚠️ <b>Не удалось скачать ни одного нового прайс-листа с каналов.</b>")
         
     # Удаляем временные локальные файлы
     for path in downloaded_paths:
@@ -291,7 +336,7 @@ async def collect_latest_files() -> Tuple[bool, int]:
     return success, len(uploaded_ids)
 
 async def handle_http_request(reader, writer):
-    """Мини HTTP-сервер для обработки POST /collect от главного бота."""
+    """Мини HTTP-сервер для обработки POST /collect и POST /fetch от бота."""
     try:
         data = await reader.read(4096)
         message = data.decode()
@@ -329,8 +374,15 @@ async def handle_http_request(reader, writer):
             return
             
         if method == "POST" and path == "/collect":
-            logger.info("Received HTTP /collect request. Starting background collection flow...")
-            asyncio.create_task(run_collect_flow())
+            logger.info("Received HTTP /collect request. Starting full background collection flow...")
+            asyncio.create_task(run_collect_flow(trigger_aggregation=True))
+            
+            response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 22\r\n\r\n{\"status\":\"initiated\"}"
+            writer.write(response.encode())
+            await writer.drain()
+        elif method == "POST" and path == "/fetch":
+            logger.info("Received HTTP /fetch request. Starting download-only collection flow...")
+            asyncio.create_task(run_collect_flow(trigger_aggregation=False))
             
             response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 22\r\n\r\n{\"status\":\"initiated\"}"
             writer.write(response.encode())
@@ -390,9 +442,9 @@ async def trigger_demand_bot():
     except Exception as e:
         logger.exception(f"Failed to query on-demand bot: {e}")
 
-async def run_collect_flow():
-    """Запускает полную процедуру сбора: опрос бота-дистрибьютора + сбор всех прайсов."""
-    logger.info("Starting run_collect_flow...")
+async def run_collect_flow(trigger_aggregation: bool = True):
+    """Запускает процедуру сбора: опрос бота-дистрибьютора + сбор всех прайсов."""
+    logger.info(f"Starting run_collect_flow (trigger_aggregation={trigger_aggregation})...")
     if config.DEMAND_BOT_USERNAME:
         try:
             await trigger_demand_bot()
@@ -401,7 +453,7 @@ async def run_collect_flow():
             await asyncio.sleep(30)
         except Exception as e:
             logger.error(f"Error during triggering demand bot in flow: {e}")
-    await collect_latest_files()
+    await collect_latest_files(trigger_aggregation=trigger_aggregation)
 
 async def main():
     logger.info("Starting Scout Agent (userbot)...")

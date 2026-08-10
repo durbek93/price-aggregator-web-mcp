@@ -27,7 +27,7 @@ async def fetch_analysis_data(date1: Optional[str] = None, date2: Optional[str] 
                 f"{config.BACKEND_URL}/api/analysis/compare",
                 params=params,
                 headers=headers,
-                timeout=60.0
+                timeout=120.0
             )
             
             if response.status_code == 200:
@@ -55,7 +55,7 @@ async def fetch_manufacturer_data(producer: str, days: int) -> Optional[dict]:
                 f"{config.BACKEND_URL}/api/analysis/manufacturer-compare",
                 params={"producer": producer, "days": days},
                 headers=headers,
-                timeout=60.0
+                timeout=120.0
             )
             
             if response.status_code == 200:
@@ -83,7 +83,7 @@ async def fetch_drug_data(drug: str, days: int) -> Optional[dict]:
                 f"{config.BACKEND_URL}/api/analysis/drug-compare",
                 params={"drug": drug, "days": days},
                 headers=headers,
-                timeout=60.0
+                timeout=120.0
             )
             
             if response.status_code == 200:

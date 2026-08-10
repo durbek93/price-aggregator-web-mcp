@@ -414,6 +414,16 @@ def compare_manufacturer_prices(
     }
 
 
+def stem_word(w: str) -> str:
+    w = w.lower().strip()
+    if len(w) > 4:
+        suffixes = ["ами", "ями", "ого", "его", "ому", "ему", "ом", "ем", "ам", "ям", "ах", "ях", "ов", "ев", "ей", "а", "я", "о", "е", "у", "ю", "ы", "и"]
+        for suffix in suffixes:
+            if w.endswith(suffix) and len(w) - len(suffix) >= 4:
+                return w[:-len(suffix)]
+    return w
+
+
 @router.get("/drug-compare")
 def compare_drug_prices(
     drug: str,
@@ -443,17 +453,28 @@ def compare_drug_prices(
     
     # 2. Ищем все файлы input и input_history за последние N дней
     time_limit = datetime.utcnow() - timedelta(days=days)
-    files = db.query(FileRecord).filter(
+    all_files = db.query(FileRecord).filter(
         FileRecord.user_id == current_user.id,
         FileRecord.file_type.in_(["input", "input_history"]),
         FileRecord.uploaded_at >= time_limit
     ).order_by(FileRecord.uploaded_at.desc()).all()
     
-    if not files:
+    if not all_files:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Не найдено прайс-листов дистрибьюторов за последние {days} дней."
         )
+
+    # Дедупликация: берем только 1 последний прайс для каждого дистрибьютора в рамках одной даты
+    seen_keys = set()
+    files = []
+    for f in all_files:
+        date_str = f.uploaded_at.strftime("%Y-%m-%d")
+        dist = friendly_source_label(f.filename)
+        key = (dist, date_str)
+        if key not in seen_keys:
+            seen_keys.add(key)
+            files.append(f)
 
     # Загружаем настройки
     user_settings = db.query(UserSettings).filter(UserSettings.user_id == current_user.id).first()
@@ -465,13 +486,14 @@ def compare_drug_prices(
     stock_cands = columns_config.get("stock_candidates", [])
     prod_cands = columns_config.get("producer_candidates", [])
 
-    # Подготавливаем части поискового запроса для поиска препарата
-    query_parts = [p.lower() for p in normalize_name(drug).split() if p.strip()]
-    if not query_parts:
+    # Подготавливаем части поискового запроса с усечением падежных окончаний
+    raw_query_parts = [p.lower() for p in normalize_name(drug).split() if p.strip()]
+    if not raw_query_parts:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Поисковый запрос препарата пуст или некорректен."
         )
+    stemmed_query_parts = [stem_word(p) for p in raw_query_parts]
 
     all_extracted_rows = []
     
@@ -510,8 +532,18 @@ def compare_drug_prices(
                     continue
                     
                 name_norm = normalize_name(str(name_val))
-                # Проверяем, что ВСЕ поисковые слова содержатся в названии препарата
-                if not all(part in name_norm for part in query_parts):
+                name_words = name_norm.split()
+                stemmed_name_words = [stem_word(w) for w in name_words]
+                full_stemmed_name = " ".join(stemmed_name_words)
+
+                # Проверяем, что ВСЕ поисковые слова (или их основы) содержатся в названии препарата
+                match_ok = True
+                for sqp, raw_p in zip(stemmed_query_parts, raw_query_parts):
+                    if not (raw_p in name_norm or sqp in full_stemmed_name or any(sqp in sw or sw in sqp for sw in stemmed_name_words)):
+                        match_ok = False
+                        break
+
+                if not match_ok:
                     continue
                     
                 price = to_number(r.get(price_col))

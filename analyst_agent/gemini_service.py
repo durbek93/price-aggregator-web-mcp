@@ -132,6 +132,30 @@ async def classify_user_request(text: str) -> dict:
             "wants_presentation": wants_presentation
         }
 
+    # Быстрая детерминированная проверка для скачивания прайсов
+    fetch_keywords = ["/fetch", "/download_prices", "скачай прайсы", "скачай последние прайсы", "загрузи прайсы", "скачать прайсы"]
+    if any(kw in text_low for kw in fetch_keywords):
+        logger.info("Fast classification match: fetch_prices")
+        return {
+            "request_type": "fetch_prices",
+            "target": None,
+            "days": 3,
+            "wants_chart": False,
+            "wants_presentation": False
+        }
+
+    # Быстрая детерминированная проверка для очистки памяти
+    purge_keywords = ["/clean", "/purge", "очисти память", "очистить память", "удали прайсы за"]
+    if any(kw in text_low for kw in purge_keywords):
+        logger.info("Fast classification match: purge_memory")
+        return {
+            "request_type": "purge_memory",
+            "target": None,
+            "days": 3,
+            "wants_chart": False,
+            "wants_presentation": False
+        }
+
     # Быстрая детерминированная проверка для вопросов о наличии файлов/прайсов/БД
     db_keywords = [
         "какие прайсы", "какие файлы", "доступны в бд", "доступны для анализа",
@@ -155,10 +179,12 @@ async def classify_user_request(text: str) -> dict:
         "2. Анализ по конкретному препарату (например, 'анализ цен по препарату Виферон 150', 'какие цены на Анаферон капли за последние 2 дня') -> request_type: 'drug'\n"
         "3. Вопрос о содержимом БД/файлов (например, 'какие сводные прайс листы доступны в БД', 'покажи список файлов', 'сколько прайсов загружено') -> request_type: 'database_info'\n"
         "4. Отчет по ПРОДАЖАМ (например, 'анализ продаж', 'отчет по продажам', 'сколько продали в упаковках') -> request_type: 'sales'\n"
-        "5. Общий вопрос / диалог / справка (например, 'привет', 'что ты умеешь', 'как пользоваться') -> request_type: 'general_qa'\n"
-        "6. Общий отчет по сводному прайсу (например, 'сводный прайс собран', 'сделай общий анализ', 'покажи изменения') -> request_type: 'standard'\n\n"
+        "5. Команда скачивания прайсов (например, 'скачай последние прайсы с ТГ каналов', '/fetch') -> request_type: 'fetch_prices'\n"
+        "6. Команда очистки памяти (например, 'очисти память за май и июнь 2026', '/clean 05.2026') -> request_type: 'purge_memory'\n"
+        "7. Общий вопрос / диалог / справка (например, 'привет', 'что ты умеешь', 'как пользоваться') -> request_type: 'general_qa'\n"
+        "8. Общий отчет по сводному прайсу (например, 'сводный прайс собран', 'сделай общий анализ', 'покажи изменения') -> request_type: 'standard'\n\n"
         "Ответ должен быть СТРОГО в формате JSON с полями:\n"
-        "- 'request_type': строка, одна из: 'manufacturer', 'drug', 'database_info', 'sales', 'general_qa', 'standard'\n"
+        "- 'request_type': строка, одна из: 'manufacturer', 'drug', 'database_info', 'sales', 'fetch_prices', 'purge_memory', 'general_qa', 'standard'\n"
         "- 'target': строка с названием производителя или препарата или null, если не применимо.\n"
         "- 'days': целое число дней (если указано в запросе, например 'за 2 дня' -> 2; по умолчанию 3 если не указано).\n"
         "- 'date1': первая дата из запроса в формате 'ДД.ММ.ГГГГ' (например '29.06.2026') или null.\n"

@@ -119,13 +119,15 @@ async def collect_latest_files(trigger_aggregation: bool = True) -> Tuple[bool, 
                         continue
                     
                     if is_grand:
-                        if "price" in low_name or "прайс" in low_name:
-                            if "100" in low_name:
-                                if not msg_100:
-                                    msg_100 = message
-                            else:
-                                if not msg_25:
-                                    msg_25 = message
+                        if "100" in low_name:
+                            if not msg_100:
+                                msg_100 = message
+                        elif "25" in low_name or "отсроч" in low_name or "25%" in low_name:
+                            if not msg_25:
+                                msg_25 = message
+                        elif "price" in low_name or "прайс" in low_name:
+                            if not msg_25:
+                                msg_25 = message
                     else:  # is_promotion
                         if "100" in low_name:
                             if not msg_100:
@@ -204,6 +206,7 @@ async def collect_latest_files(trigger_aggregation: bool = True) -> Tuple[bool, 
                         download_summary.setdefault(cleaned_name, []).append(target_name)
                 continue
 
+            is_meros = (str(channel) == "-1001367609205" or channel == -1001367609205 or "meros" in str(cleaned_name).lower() or "мерос" in str(cleaned_name).lower())
             candidates = []
             async for message in app.get_chat_history(channel, limit=1000):
                 if not message.document:
@@ -228,24 +231,37 @@ async def collect_latest_files(trigger_aggregation: bool = True) -> Tuple[bool, 
                     "навои", "navoi", "термез", "termez", "ургенч", "urgench", "хива", "khiva"
                 ]
                 tashkent_keywords = ["ташкент", "тошкент", "tashkent", "toshkent"]
+                samarkand_keywords = ["самарканд", "samarkand"]
                 
                 has_fergana = any(f in text_to_check for f in fergana_keywords)
-                has_other_region = any(r in text_to_check for r in other_regions)
+                has_samarkand = any(s in text_to_check for s in samarkand_keywords)
                 has_tashkent = any(t in text_to_check for t in tashkent_keywords)
                 
-                if not is_biotek and has_other_region and not (has_fergana or has_tashkent):
-                    logger.info(f"File '{filename}' ignored (matches other region '{text_to_check}' and doesn't contain Fergana/Tashkent).")
-                    continue
+                other_non_samarkand = [r for r in other_regions if r not in samarkand_keywords]
+                has_other_non_samarkand = any(r in text_to_check for r in other_non_samarkand)
+                
+                if is_meros:
+                    if has_other_non_samarkand and not (has_fergana or has_tashkent or has_samarkand):
+                        logger.info(f"File '{filename}' ignored for Meros (matches other region '{text_to_check}').")
+                        continue
+                else:
+                    has_other_region = any(r in text_to_check for r in other_regions)
+                    if not is_biotek and has_other_region and not (has_fergana or has_tashkent):
+                        logger.info(f"File '{filename}' ignored (matches other region '{text_to_check}' and doesn't contain Fergana/Tashkent).")
+                        continue
                 
                 score = 100.0
                 
-                # Бонус за Фергану
+                # Бонус за регионы
                 if has_fergana:
                     score += 50.0
                 elif has_tashkent:
                     score += 20.0
-                elif has_other_region:
+                elif has_samarkand:
+                    score += 15.0
+                elif not is_biotek:
                     score -= 70.0
+
                 promo_pattern = re.compile(
                     r"\b(?:акци|скидк|распродаж|уцен|promo\b|action\b|sale\b|приход|остатк|бонус|bonus\b|презентац|косметик|гигиен|аптеч|дефицит|ограничен|спец)",
                     re.IGNORECASE
@@ -272,14 +288,32 @@ async def collect_latest_files(trigger_aggregation: bool = True) -> Tuple[bool, 
                         break
                         
                 score += (message.date.timestamp() / 86400.0)
-                candidates.append((score, message))
+                region_tag = "tashkent"
+                if is_meros and has_samarkand and not has_tashkent:
+                    region_tag = "samarkand"
+                candidates.append((score, message, region_tag))
                 
             if not candidates:
                 logger.warning(f"No valid price list candidates found in channel {channel}")
                 continue
                 
-            candidates.sort(key=lambda x: x[0], reverse=True)
-            best_score, best_message = candidates[0]
+            if is_meros:
+                tashkent_cands = [c for c in candidates if c[2] == "tashkent"]
+                samarkand_cands = [c for c in candidates if c[2] == "samarkand"]
+                if tashkent_cands:
+                    tashkent_cands.sort(key=lambda x: x[0], reverse=True)
+                    best_score, best_message, _ = tashkent_cands[0]
+                    logger.info(f"Selected Tashkent price list for Meros Pharm: {best_message.document.file_name}")
+                elif samarkand_cands:
+                    samarkand_cands.sort(key=lambda x: x[0], reverse=True)
+                    best_score, best_message, _ = samarkand_cands[0]
+                    logger.info(f"Tashkent price list absent for Meros Pharm. Falling back to Samarkand price list: {best_message.document.file_name}")
+                else:
+                    candidates.sort(key=lambda x: x[0], reverse=True)
+                    best_score, best_message, _ = candidates[0]
+            else:
+                candidates.sort(key=lambda x: x[0], reverse=True)
+                best_score, best_message, _ = candidates[0]
             best_doc = best_message.document
             
             ext = Path(best_doc.file_name).suffix.lower()

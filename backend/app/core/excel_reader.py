@@ -34,6 +34,7 @@ DEFAULT_PRICE_CANDIDATES = [
     "Тип цены Сотув",
     "Цена С НДС",
     "Цена 100%",
+    "цена 100 %",
     "Цена с НДС 100%",
     "Цена для клиента с предоплатой 100%",
     "Цена с НДС",
@@ -233,19 +234,35 @@ def _grand_farm_header_row(
     price_candidates: List[str],
 ) -> Optional[int]:
     """
-    В прайсах «Гранд Фарм» таблица начинается на сотнях строки; номер строки
-    заголовков в файле со временем меняется.
+    В прайсах «Гранд Фарм» заголовок основной таблицы находится после рекламных блоков (~3000+ строка).
     """
     price_cands = {_normalize_col_for_match(p) for p in price_candidates}
     name_cands = {_normalize_col_for_match(n) for n in name_candidates}
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     try:
         ws = wb.active
+        # Основной поиск с 3000 по 4500 строку
         for excel_row_1based, row in enumerate(
-            ws.iter_rows(min_row=250, max_row=620, values_only=True),
-            start=250,
+            ws.iter_rows(min_row=3000, max_row=4500, values_only=True),
+            start=2500,
         ):
             normed: set = set()
+            for v in row:
+                if v is None:
+                    continue
+                s = str(v).strip()
+                if not s:
+                    continue
+                normed.add(_normalize_col_for_match(s))
+            if normed & name_cands and normed & price_cands:
+                return excel_row_1based - 1
+
+        # Фоллбэк: проход от 1 до 4500 строки, если структура файла отличается
+        for excel_row_1based, row in enumerate(
+            ws.iter_rows(min_row=1, max_row=4500, values_only=True),
+            start=1,
+        ):
+            normed = set()
             for v in row:
                 if v is None:
                     continue

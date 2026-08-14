@@ -1,5 +1,6 @@
-# -*- coding: utf-8 -*-
+import logging
 import jwt
+import redis
 from datetime import datetime, timedelta
 from typing import Any, Dict
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,13 +12,35 @@ from app.models import User
 from app.schemas import UserSchema
 from app.api.dependencies import get_current_user
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+def _get_redis():
+    try:
+        return redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+    except Exception as e:
+        logger.warning(f"Could not connect to Redis for token invalidation check: {e}")
+        return None
 
 @router.get("/verify", response_model=Dict[str, Any])
 def verify_magic_token(token: str, db: Session = Depends(get_db)):
-    """Проверяет JWT токен из Magic Link и выдает сессионный токен."""
+    """Проверяет одноразовый JWT токен из Magic Link и выдает сессионный токен."""
     try:
         payload = jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"])
+        token_type = payload.get("type")
+        if token_type and token_type != "magic_link":
+            raise HTTPException(status_code=400, detail="Неверный тип токена")
+
+        jti = payload.get("jti")
+        if jti:
+            r = _get_redis()
+            if r:
+                # Атомарная проверка одноразовости (NX = set if Not eXists)
+                key = f"magic_used:{jti}"
+                is_first_use = r.set(key, "used", ex=900, nx=True)
+                if not is_first_use:
+                    raise HTTPException(status_code=400, detail="Эта ссылка авторизации уже была использована")
+
         user_id = payload.get("user_id")
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
@@ -27,6 +50,7 @@ def verify_magic_token(token: str, db: Session = Depends(get_db)):
         session_payload = {
             "user_id": user.id,
             "telegram_id": user.telegram_id,
+            "type": "session",
             "exp": datetime.utcnow() + timedelta(days=30)
         }
         session_token = jwt.encode(session_payload, settings.JWT_SECRET, algorithm="HS256")
@@ -40,6 +64,8 @@ def verify_magic_token(token: str, db: Session = Depends(get_db)):
                 "first_name": user.first_name
             }
         }
+    except HTTPException:
+        raise
     except jwt.PyJWTError:
         raise HTTPException(status_code=400, detail="Неверная или устаревшая ссылка авторизации")
 

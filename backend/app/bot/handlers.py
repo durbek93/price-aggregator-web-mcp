@@ -41,7 +41,7 @@ async def command_start_handler(message: Message) -> None:
         f"2. Запускать анализ файлов прямо отсюда с помощью меню ниже.\n"
         f"3. Авторизоваться в веб-интерфейсе для тонкой настройки колонок, каталога брендов и просмотра графиков.\n\n"
         f"🔗 {html.bold('Ваша ссылка для входа на сайт:')}\n{magic_link}\n"
-        f"_(Действительна 7 дней)_",
+        f"_(Действительна 15 минут)_",
         reply_markup=get_main_keyboard(),
         disable_web_page_preview=True
     )

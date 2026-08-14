@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+import secrets
 import jwt
 from typing import Optional
 from fastapi import Depends, HTTPException, Header, status
@@ -14,8 +14,8 @@ async def get_current_user(
     x_target_user_id: Optional[int] = Header(None, alias="X-Target-User-ID"),
     db: Session = Depends(get_db)
 ) -> User:
-    # Проверка внутреннего API-ключа для Агентов
-    if x_internal_api_key and x_internal_api_key == settings.INTERNAL_API_KEY:
+    # Проверка внутреннего API-ключа для Агентов (timing-safe check)
+    if x_internal_api_key and settings.INTERNAL_API_KEY and secrets.compare_digest(x_internal_api_key, settings.INTERNAL_API_KEY):
         if not x_target_user_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

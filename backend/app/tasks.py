@@ -52,7 +52,7 @@ def send_telegram_doc_sync(telegram_id: int, file_path: str, caption: str) -> No
         asyncio.run(_send())
 
 
-@celery_app.task(bind=True)
+@celery_app.task(bind=True, time_limit=300, soft_time_limit=240)
 def run_pipeline_task(self, task_record_id: int) -> Dict[str, Any]:
     """Фоновая задача Celery для запуска обработки прайс-листов."""
     db = SessionLocal()

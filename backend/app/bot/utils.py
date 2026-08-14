@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+import uuid
 import jwt
 from datetime import datetime, timedelta
 from app.config import settings
@@ -6,11 +6,14 @@ from app.database import SessionLocal
 from app.models import User, UserSettings
 
 def generate_magic_link(user_id: int, telegram_id: int) -> str:
-    """Генерирует JWT токен и Magic Link для авторизации в веб-версии."""
+    """Генерирует одноразовый JWT токен и Magic Link для авторизации в веб-версии (TTL 15 минут)."""
+    jti = uuid.uuid4().hex
     payload = {
         "user_id": user_id,
         "telegram_id": telegram_id,
-        "exp": datetime.utcnow() + timedelta(days=7)  # Токен активен 7 дней
+        "jti": jti,
+        "type": "magic_link",
+        "exp": datetime.utcnow() + timedelta(minutes=15)  # Токен активен 15 минут
     }
     token = jwt.encode(payload, settings.JWT_SECRET, algorithm="HS256")
     # Используем базовый адрес фронтенда из настроек

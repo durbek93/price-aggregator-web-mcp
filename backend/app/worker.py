@@ -8,13 +8,16 @@ celery_app = Celery(
     backend=settings.REDIS_URL
 )
 
-# Optional configuration
+# Celery configuration & hardening
 celery_app.conf.update(
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
+    task_time_limit=300,        # Жесткий таймаут 5 минут
+    task_soft_time_limit=240,   # Мягкий таймаут 4 минуты
+    worker_max_tasks_per_child=50,  # Перезапуск воркера каждые 50 задач против утечек RAM
 )
 
 # Autodiscover tasks from app.tasks

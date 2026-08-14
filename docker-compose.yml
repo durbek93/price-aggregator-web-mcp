@@ -9,8 +9,8 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres_secure_password
       POSTGRES_DB: price_aggregator
-    ports:
-      - "5432:5432"
+    expose:
+      - "5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -30,8 +30,8 @@ services:
     image: redis:7-alpine
     container_name: price_aggregator_redis
     restart: always
-    ports:
-      - "6379:6379"
+    expose:
+      - "6379"
 
   backend:
     build:
@@ -66,7 +66,7 @@ services:
       dockerfile: Dockerfile
     container_name: price_aggregator_worker
     restart: always
-    command: celery -A app.worker.celery_app worker --loglevel=info
+    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=2 --max-tasks-per-child=50
     environment:
       - DATABASE_URL=postgresql://postgres:postgres_secure_password@db:5432/price_aggregator
       - REDIS_URL=redis://redis:6379/0

@@ -119,13 +119,26 @@ async def collect_latest_files(trigger_aggregation: bool = True) -> Tuple[bool, 
                         continue
                     
                     if is_grand:
+                        caption_text = (message.caption or "").lower()
+                        full_text = low_name + " " + caption_text
+                        file_size = message.document.file_size or 0
+                        
+                        # 1. Пропускаем акционные файлы по ключевым словам и процентам скидок (-3%, - 3 %, чегирма)
+                        is_promo = any(kw in full_text for kw in ["чегирма", "chegirma", "скидк", "акци", "promo", "bonus", "бонус", "уцен", "распродаж"]) or bool(re.search(r"-\s*\d+\s*%", full_text))
+                        if is_promo:
+                            logger.info(f"Skipping promotional/action file in Grand Pharm: {fname}")
+                            continue
+                            
+                        # 2. Пропускаем усеченные файлы меньше 2 МБ (основные прайсы имеют размер ~16 МБ)
+                        if file_size > 0 and file_size < 2000000:
+                            logger.info(f"Skipping small file (<2MB) in Grand Pharm: {fname} ({file_size} bytes)")
+                            continue
+                            
+                        # 3. Сопоставляем основные прайсы 100% и 25%
                         if "100" in low_name:
                             if not msg_100:
                                 msg_100 = message
-                        elif "25" in low_name or "отсроч" in low_name or "25%" in low_name:
-                            if not msg_25:
-                                msg_25 = message
-                        elif "price" in low_name or "прайс" in low_name:
+                        else:
                             if not msg_25:
                                 msg_25 = message
                     else:  # is_promotion

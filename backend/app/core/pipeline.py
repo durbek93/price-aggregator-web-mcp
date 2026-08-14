@@ -620,64 +620,34 @@ def run_svodny_horizontal(
                     p25_col, p100_col = pick_price_columns(list(df_file.columns), price_c)
             elif "biotek" in path.name.lower() or "биотек" in path.name.lower():
                 # For Biotek Pharm
-                p25_col = "Цена" if "Цена" in df_file.columns else pick_price_column(list(df_file.columns), price_c)
-                p100_col = None
-                found_col = None
-                
-                # 1. Check for explicit columns like Цена-4, Цена 4, -4, Цена-3, Цена 3, -3
-                target_names = ["цена-4", "цена 4", "цена - 4", "-4", "цена-3", "цена 3", "цена - 3", "-3", "цена-2", "цена 2", "цена - 2", "-2"]
-                for target in target_names:
-                    for col in df_file.columns:
-                        c_norm = str(col).lower().replace("–", "-").replace("—", "-").replace("−", "-").strip()
-                        if c_norm == target or c_norm.replace(" ", "") == target.replace(" ", ""):
-                            found_col = col
-                            break
-                    if found_col:
+                raw_cols = list(df_file.columns)
+                name_col_idx = raw_cols.index(name_col) if name_col in raw_cols else None
+
+                price_col_indices = []
+                for idx, col in enumerate(raw_cols):
+                    if name_col_idx is not None and idx <= name_col_idx:
+                        continue
+                    c_str = str(col).lower().replace("–", "-").replace("—", "-").replace("−", "-").strip()
+                    if any(x in c_str for x in ["заказ", "орг. уп", "орг.уп", "произ.", "производитель", "годности", "годность"]):
                         break
-                        
-                # 2. Fallback: Check for -4% or -3% discount strings
-                if not found_col:
-                    for pct in [0.04, 0.03]:
-                        pct_str_1 = f"-{pct}"
-                        pct_str_2 = f"-{int(pct * 100)}"
-                        pct_str_3 = f"-{int(pct * 100)}%"
-                        
-                        for col in df_file.columns:
-                            col_str = str(col).strip()
-                            if any(x in col_str for x in [pct_str_1, pct_str_2, pct_str_3]):
-                                found_col = col
+                    if "цена" in c_str or any(x in c_str for x in ["-2", "-3", "-4", "-5", "-0.02", "-0.03", "-0.04", "-0.05"]) or c_str.startswith("unnamed"):
+                        price_col_indices.append(idx)
+                    else:
+                        is_num = False
+                        for r_i in range(min(5, len(df_file))):
+                            v = df_file.iloc[r_i, idx]
+                            if pd.notna(v) and isinstance(v, (int, float)):
+                                is_num = True
                                 break
-                            try:
-                                f_val = float(col)
-                                if abs(f_val + pct) < 0.001 or abs(f_val + pct * 100) < 0.001:
-                                    found_col = col
-                                    break
-                            except (ValueError, TypeError):
-                                pass
-                                
-                        if found_col:
-                            break
-                            
-                        for r_idx in range(min(10, len(df_file))):
-                            row = df_file.iloc[r_idx]
-                            for col in df_file.columns:
-                                val = row.get(col)
-                                if val is not None:
-                                    val_str = str(val).strip()
-                                    if any(x in val_str for x in [pct_str_1, pct_str_2, pct_str_3]):
-                                        found_col = col
-                                        break
-                                    try:
-                                        if abs(float(val) + pct) < 0.001:
-                                            found_col = col
-                                            break
-                                    except (ValueError, TypeError):
-                                        pass
-                            if found_col:
-                                break
-                        if found_col:
-                            break
-                p100_col = found_col
+                        if is_num:
+                            price_col_indices.append(idx)
+
+                if price_col_indices:
+                    p25_col = raw_cols[price_col_indices[0]]
+                    p100_col = raw_cols[price_col_indices[-1]] if len(price_col_indices) > 1 else None
+                else:
+                    p25_col = pick_price_column(raw_cols, price_c)
+                    p100_col = None
             
             if not name_col:
                 raise ValueError("Не найдена колонка наименования препарата.")

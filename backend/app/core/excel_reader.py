@@ -54,7 +54,6 @@ DEFAULT_PRICE_CANDIDATES = [
     "Сумма заказ",
     "Сумма",
     "Отп. Цена",
-    "Цена, руб",
     "Price",
     "Нарх",
     "Розница",
@@ -77,6 +76,23 @@ def _normalize_col_for_match(col: str) -> str:
 
 def _clean_col(c: Any) -> str:
     return str(c).strip() if c is not None else ""
+
+
+def _make_columns_unique(cols: List[Any]) -> List[str]:
+    """Дедупликация имен колонок (например: Цена, Цена_1, Цена_2)."""
+    seen = {}
+    result = []
+    for c in cols:
+        name = _clean_col(c)
+        if not name:
+            name = "Unnamed"
+        if name in seen:
+            seen[name] += 1
+            result.append(f"{name}_{seen[name]}")
+        else:
+            seen[name] = 0
+            result.append(name)
+    return result
 
 
 def pick_column(
@@ -234,35 +250,18 @@ def _grand_farm_header_row(
     price_candidates: List[str],
 ) -> Optional[int]:
     """
-    В прайсах «Гранд Фарм» заголовок основной таблицы находится после рекламных блоков (~3000+ строка).
+    В прайсах «Гранд Фарм» заголовок основной таблицы ищется от 1 до 5000 строки.
     """
     price_cands = {_normalize_col_for_match(p) for p in price_candidates}
     name_cands = {_normalize_col_for_match(n) for n in name_candidates}
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     try:
         ws = wb.active
-        # Основной поиск с 3000 по 4500 строку
         for excel_row_1based, row in enumerate(
-            ws.iter_rows(min_row=3000, max_row=4500, values_only=True),
+            ws.iter_rows(min_row=2500, max_row=5000, values_only=True),
             start=2500,
         ):
             normed: set = set()
-            for v in row:
-                if v is None:
-                    continue
-                s = str(v).strip()
-                if not s:
-                    continue
-                normed.add(_normalize_col_for_match(s))
-            if normed & name_cands and normed & price_cands:
-                return excel_row_1based - 1
-
-        # Фоллбэк: проход от 1 до 4500 строки, если структура файла отличается
-        for excel_row_1based, row in enumerate(
-            ws.iter_rows(min_row=1, max_row=4500, values_only=True),
-            start=1,
-        ):
-            normed = set()
             for v in row:
                 if v is None:
                     continue
@@ -431,7 +430,7 @@ def read_price_table(
     for sheet in sheets:
         try:
             df0 = pd.read_excel(read_path, engine=engine, sheet_name=sheet, header=0)
-            df0.columns = [_clean_col(c) for c in df0.columns]
+            df0.columns = _make_columns_unique(df0.columns)
             cols0 = [_normalize_col_for_match(c) for c in df0.columns]
             if any(p in cols0 for p in price_cands) and any(n in cols0 for n in name_cands):
                 return df0
@@ -448,7 +447,7 @@ def read_price_table(
                     has_name = any(n in row_vals for n in name_cands)
                     if has_price and has_name:
                         df = pd.read_excel(read_path, engine=engine, sheet_name=sheet, header=r_idx)
-                        df.columns = [_clean_col(c) for c in df.columns]
+                        df.columns = _make_columns_unique(df.columns)
                         return df
 
                     if r_idx + 1 < len(df_scan):
@@ -491,7 +490,7 @@ def read_price_table(
                                 else:
                                     new_cols.append(f"Unnamed: {col_i}")
                                     
-                            df.columns = new_cols
+                            df.columns = _make_columns_unique(new_cols)
                             if not df.empty:
                                 df = df.iloc[1:].reset_index(drop=True)
                             return df

@@ -9,6 +9,8 @@ from app.database import get_db
 from app.models import User, FileRecord, UserSettings
 from app.api.dependencies import get_current_user
 
+from app.core.price_utils import to_number
+
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
 @router.get("/compare")
@@ -145,69 +147,72 @@ def compare_prices(
         if not drug_name or drug_name == "nan":
             continue
 
-        # Собираем все текущие предложения по этому препарату
+        # Собираем все текущие предложения и отсутствующие позиции по этому препарату
         offers = []
+        missing_suppliers = []
         for supplier in curr_suppliers:
-            price = row[supplier]
-            # Проверяем, что цена числовая и не NaN
-            if pd.notna(price) and isinstance(price, (int, float)) and price > 0:
-                offers.append({"supplier": supplier, "price": float(price)})
+            price_val = to_number(row[supplier])
+            if price_val is not None and price_val > 0:
+                offers.append({"supplier": supplier, "price": price_val})
+            else:
+                missing_suppliers.append(supplier)
 
-        # Если по препарату нет ни одной цены, пропускаем его
         if not offers:
+            # Препарат полностью отсутствует у всех дистрибьюторов (100% дефектура)
+            drugs_data[drug_name] = {
+                "best_offers": [],
+                "dynamics": [],
+                "status": "deficit",
+                "deficit_details": "Полный дефицит: препарат отсутствует у всех дистрибьюторов",
+                "missing_suppliers": curr_suppliers,
+            }
             continue
 
-        # Сортируем предложения и берем топ-3 лучших
         offers_sorted = sorted(offers, key=lambda x: x["price"])
         best_offers = offers_sorted[:3]
 
         dynamics = []
         status_str = "stable"
-        deficit_details = None
         disappeared_suppliers = []
 
-        # Считаем динамику, если есть с чем сравнивать
         if df_prev is not None and "Препарат" in df_prev.columns:
-            # Находим эту позицию в прошлом прайсе
             prev_row_match = df_prev[df_prev["Препарат"].str.strip() == drug_name]
             if not prev_row_match.empty:
                 prev_row = prev_row_match.iloc[0]
-                prev_suppliers = [col for col in df_prev.columns if col != "Препарат"]
-
-                # Для каждого поставщика из текущего прайса считаем дельту
                 for supplier in curr_suppliers:
-                    curr_price = row[supplier]
-                    if supplier in prev_row:
-                        prev_price = prev_row[supplier]
-                        
-                        # Если цена была и есть сейчас, считаем изменение
-                        if pd.notna(curr_price) and pd.notna(prev_price) and prev_price > 0:
-                            change = float(curr_price) - float(prev_price)
-                            pct = round((change / float(prev_price)) * 100, 1)
+                    curr_price = to_number(row.get(supplier))
+                    prev_price = to_number(prev_row.get(supplier))
+                    
+                    if curr_price is not None and prev_price is not None and prev_price > 0:
+                        change = curr_price - prev_price
+                        pct = round((change / prev_price) * 100, 1)
+                        if abs(change) > 0.01:
                             dynamics.append({
                                 "supplier": supplier,
                                 "change_uzs": float(change),
                                 "change_percent": pct
                             })
-                    
-                # Ищем поставщиков, у которых товар пропал (был в прошлом, нет в текущем)
-                for supplier in prev_suppliers:
-                    prev_price = prev_row[supplier]
-                    if pd.notna(prev_price) and float(prev_price) > 0:
-                        if supplier not in row or pd.isna(row[supplier]) or float(row[supplier]) <= 0:
-                            disappeared_suppliers.append(supplier)
+                    elif prev_price is not None and prev_price > 0 and curr_price is None:
+                        disappeared_suppliers.append(supplier)
 
+        deficit_parts = []
         if disappeared_suppliers:
+            deficit_parts.append(f"Вымылся из прошлого прайса у: {', '.join(disappeared_suppliers)}")
+        if missing_suppliers:
+            deficit_parts.append(f"Отсутствует в наличии у: {', '.join(missing_suppliers)}")
+
+        if deficit_parts:
             status_str = "deficit"
-            deficit_details = f"Позиция вымылась у дистрибьюторов: {', '.join(disappeared_suppliers)}"
 
         drugs_data[drug_name] = {
             "best_offers": best_offers,
             "dynamics": dynamics,
             "status": status_str,
+            "missing_suppliers": missing_suppliers,
+            "disappeared_suppliers": disappeared_suppliers,
         }
-        if deficit_details:
-            drugs_data[drug_name]["deficit_details"] = deficit_details
+        if deficit_parts:
+            drugs_data[drug_name]["deficit_details"] = "; ".join(deficit_parts)
 
     return {
         "meta": {

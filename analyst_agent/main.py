@@ -498,8 +498,8 @@ async def handle_new_report_notification(message: types.Message):
                 await message.reply(error_text)
                 return
                 
-            # Проверим, запрашивает ли пользователь отчет с дефицитом
-            include_deficit = "дефицит" in text_low
+            # Проверим, запрашивает ли пользователь отчет с дефицитом/дефектурой
+            include_deficit = any(kw in text_low for kw in ["дефицит", "дефектур", "вымыв", "нет в наличии", "отсутству"])
             logger.info(f"Generating report with include_deficit={include_deficit}")
             
             # Шаг 2: Генерируем аналитику через Gemini 2.5 Flash

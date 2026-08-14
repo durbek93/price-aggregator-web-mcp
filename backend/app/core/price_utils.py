@@ -48,7 +48,7 @@ def to_number(value: Any) -> Optional[float]:
     if isinstance(value, (int, float)):
         return float(value)
     text = str(value).strip().replace("\xa0", "").replace(" ", "").replace(",", ".")
-    for ch in ["₽", "руб", "руб.", "сум"]:
+    for ch in ["₽", "руб", "руб.", "сум", "↑", "↓"]:
         text = text.replace(ch, "")
     text = text.strip()
     if not text:

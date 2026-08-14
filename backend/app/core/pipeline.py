@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable, List, Optional, Tuple, Dict, Any
 
 import openpyxl
+from openpyxl.styles import PatternFill, Font
 import pandas as pd
 
 # Динамически добавляем путь к текущей папке в sys.path, чтобы импорты внутри модулей работали
@@ -447,6 +448,105 @@ def match_product_to_template(product_name: str, template_products: List[Tuple[i
     return None
 
 
+FILL_GREEN = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+FONT_GREEN = Font(color="375623", bold=True)
+
+FILL_RED = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
+FONT_RED = Font(color="C65911", bold=True)
+
+
+def _load_previous_svodny_prices(output_dir: Path, exclude_filename: str = "") -> Dict[Tuple[int, int], float]:
+    """
+    Загружает цены из последнего ранее сгенерированного файла «Сводный прайс *.xlsx».
+    Возвращает словарь (row, col) -> float_price.
+    """
+    prev_prices: Dict[Tuple[int, int], float] = {}
+    if not output_dir.exists():
+        return prev_prices
+
+    candidates = []
+    for p in output_dir.glob("Сводный прайс *.xlsx"):
+        if p.name == exclude_filename or "вертикально" in p.name.lower():
+            continue
+        try:
+            candidates.append((p.stat().st_mtime, p))
+        except OSError:
+            pass
+
+    if not candidates:
+        return prev_prices
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    latest_file = candidates[0][1]
+
+    try:
+        wb_prev = openpyxl.load_workbook(latest_file, data_only=True)
+        sheet_prev = wb_prev["СвПрайс"] if "СвПрайс" in wb_prev.sheetnames else wb_prev.active
+        for r in range(7, 25):
+            for c in range(3, 19):
+                val = sheet_prev.cell(row=r, column=c).value
+                if val is not None:
+                    try:
+                        if isinstance(val, (int, float)):
+                            prev_prices[(r, c)] = float(val)
+                        else:
+                            clean_s = "".join(ch for ch in str(val) if ch.isdigit() or ch in ".,")
+                            if clean_s:
+                                prev_prices[(r, c)] = float(clean_s.replace(",", "."))
+                    except (ValueError, TypeError):
+                        pass
+        wb_prev.close()
+    except Exception:
+        pass
+
+    return prev_prices
+
+
+def _get_current_numeric_price(cell_val: Any) -> Optional[float]:
+    if cell_val is None:
+        return None
+    if isinstance(cell_val, (int, float)):
+        return float(cell_val)
+    try:
+        clean_s = "".join(ch for ch in str(cell_val) if ch.isdigit() or ch in ".,")
+        if clean_s:
+            return float(clean_s.replace(",", "."))
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
+def _set_price_cell(sheet, row: int, col: int, price_to_put: float, prev_prices: Dict[Tuple[int, int], float]):
+    curr_raw = sheet.cell(row=row, column=col).value
+    curr_num = _get_current_numeric_price(curr_raw)
+    
+    # Если цена уже установлена, перезаписываем только если новая цена выгоднее (ниже)
+    if curr_num is not None and price_to_put >= curr_num:
+        return
+
+    rounded_price = round_price(price_to_put)
+    prev_price = prev_prices.get((row, col))
+    
+    cell = sheet.cell(row=row, column=col)
+    
+    if prev_price is not None and prev_price > 0:
+        prev_rounded = round_price(prev_price)
+        if rounded_price > prev_rounded:
+            val_str = f"{int(rounded_price):,}".replace(",", " ")
+            cell.value = f"{val_str} ↑"
+            cell.fill = FILL_RED
+            cell.font = FONT_RED
+            return
+        elif rounded_price < prev_rounded:
+            val_str = f"{int(rounded_price):,}".replace(",", " ")
+            cell.value = f"{val_str} ↓"
+            cell.fill = FILL_GREEN
+            cell.font = FONT_GREEN
+            return
+
+    cell.value = rounded_price
+
+
 def run_svodny_horizontal(
     settings_dict: Dict[str, Any],
     catalog_list: List[Tuple[str, List[str]]],
@@ -465,6 +565,9 @@ def run_svodny_horizontal(
     today = datetime.now().strftime("%d.%m.%Y")
     out = output_dir / f"Сводный прайс {today}.xlsx"
     out.parent.mkdir(parents=True, exist_ok=True)
+
+    prev_prices = _load_previous_svodny_prices(output_dir, exclude_filename=out.name)
+
     shutil.copy(template_path, out)
     
     wb = openpyxl.load_workbook(out)
@@ -630,7 +733,19 @@ def run_svodny_horizontal(
                     c_str = str(col).lower().replace("–", "-").replace("—", "-").replace("−", "-").strip()
                     if any(x in c_str for x in ["заказ", "орг. уп", "орг.уп", "произ.", "производитель", "годности", "годность"]):
                         break
-                    if "цена" in c_str or any(x in c_str for x in ["-2", "-3", "-4", "-5", "-0.02", "-0.03", "-0.04", "-0.05"]) or c_str.startswith("unnamed"):
+
+                    if c_str.startswith("unnamed"):
+                        valid_prices = 0
+                        for v in df_file.iloc[:, idx].dropna():
+                            try:
+                                if float(v) > 500:
+                                    valid_prices += 1
+                            except (ValueError, TypeError):
+                                pass
+                        if valid_prices < 50:
+                            continue
+
+                    if "цена" in c_str or any(x in c_str for x in ["-2", "-3", "-4", "-5", "-0.02", "-0.03", "-0.04", "-0.05"]):
                         price_col_indices.append(idx)
                     else:
                         is_num = False
@@ -690,18 +805,12 @@ def run_svodny_horizontal(
                     # Для дистрибьюторов с 1 колонкой записываем лучший имеющийся прайс
                     price_to_put = val_100 or val_25
                     if price_to_put is not None:
-                        curr_val = sheet.cell(row=matched_row, column=col_25).value
-                        if curr_val is None or price_to_put < curr_val:
-                            sheet.cell(row=matched_row, column=col_25).value = round_price(price_to_put)
+                        _set_price_cell(sheet, matched_row, col_25, price_to_put, prev_prices)
                 else:
                     if val_25 is not None:
-                        curr_val = sheet.cell(row=matched_row, column=col_25).value
-                        if curr_val is None or val_25 < curr_val:
-                            sheet.cell(row=matched_row, column=col_25).value = round_price(val_25)
+                        _set_price_cell(sheet, matched_row, col_25, val_25, prev_prices)
                     if val_100 is not None:
-                        curr_val = sheet.cell(row=matched_row, column=col_100).value
-                        if curr_val is None or val_100 < curr_val:
-                            sheet.cell(row=matched_row, column=col_100).value = round_price(val_100)
+                        _set_price_cell(sheet, matched_row, col_100, val_100, prev_prices)
                             
         except Exception as ex:
             import logging

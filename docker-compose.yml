@@ -164,5 +164,30 @@ services:
     depends_on:
       - backend
 
+  debugger_agent:
+    build:
+      context: ./debugger_agent
+      dockerfile: Dockerfile
+    container_name: price_aggregator_debugger
+    restart: always
+    environment:
+      - DEBUGGER_BOT_TOKEN=${DEBUGGER_BOT_TOKEN}
+      - ALLOWED_TELEGRAM_IDS=${ALLOWED_TELEGRAM_IDS}
+      - TELEGRAM_GROUP_ID=${TELEGRAM_GROUP_ID}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=gemini-2.5-flash
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+      - BACKEND_URL=http://backend:8000
+      - UPLOAD_DIR=/app/data/uploads
+      - OUTPUT_DIR=/app/data/outputs
+      - RULES_FILE=/app/data/distributor_rules.json
+    volumes:
+      - ./debugger_agent:/app
+      - ./backend/data:/app/data
+    ports:
+      - "127.0.0.1:8001:8001"
+    depends_on:
+      - backend
+
 volumes:
   pgdata:

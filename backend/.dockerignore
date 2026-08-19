@@ -1,0 +1,10 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.git
+.env
+data
+uploads
+outputs
+node_modules

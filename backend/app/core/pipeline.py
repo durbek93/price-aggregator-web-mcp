@@ -33,6 +33,7 @@ from svodny_price import (
     is_materia_producer_norm,
     pick_price_column,
     pick_column,
+    load_distributor_rules,
 )
 from price_utils import to_number, round_price, normalize_name
 import shutil
@@ -633,7 +634,22 @@ def run_svodny_horizontal(
             producer_col = pick_column(list(df_file.columns), prod_c)
             p25_col, p100_col = pick_price_columns(list(df_file.columns), price_c)
             
-            if "meros" in path.name.lower() or "мерос" in path.name.lower():
+            # Check for custom overrides from debugger agent rules
+            dist_rules = load_distributor_rules()
+            rule = None
+            for r_key, r_val in dist_rules.items():
+                if r_key.lower() in lbl.lower() or r_key.lower() in path.name.lower():
+                    rule = r_val
+                    break
+            
+            if rule:
+                if rule.get("name_col") and rule["name_col"] in df_file.columns:
+                    name_col = rule["name_col"]
+                if rule.get("p25_col") and rule["p25_col"] in df_file.columns:
+                    p25_col = rule["p25_col"]
+                if rule.get("p100_col") and rule["p100_col"] in df_file.columns:
+                    p100_col = rule["p100_col"]
+            elif "meros" in path.name.lower() or "мерос" in path.name.lower():
                 # For Meros Pharm, find column for 25% and 100% manually
                 for col in df_file.columns:
                     c_low = str(col).lower().strip()
@@ -726,6 +742,7 @@ def run_svodny_horizontal(
                 raw_cols = list(df_file.columns)
                 name_col_idx = raw_cols.index(name_col) if name_col in raw_cols else None
 
+                min_valid = min(10, max(2, int(len(df_file) * 0.1)))
                 price_col_indices = []
                 for idx, col in enumerate(raw_cols):
                     if name_col_idx is not None and idx <= name_col_idx:
@@ -734,35 +751,23 @@ def run_svodny_horizontal(
                     if any(x in c_str for x in ["заказ", "орг. уп", "орг.уп", "произ.", "производитель", "годности", "годность"]):
                         break
 
-                    if c_str.startswith("unnamed"):
-                        valid_prices = 0
-                        for v in df_file.iloc[:, idx].dropna():
-                            try:
-                                if float(v) > 500:
-                                    valid_prices += 1
-                            except (ValueError, TypeError):
-                                pass
-                        if valid_prices < 50:
-                            continue
-
-                    if "цена" in c_str or any(x in c_str for x in ["-2", "-3", "-4", "-5", "-0.02", "-0.03", "-0.04", "-0.05"]):
+                    valid_prices = 0
+                    for v in df_file.iloc[:, idx].dropna():
+                        try:
+                            if float(v) > 500:
+                                valid_prices += 1
+                        except (ValueError, TypeError):
+                            pass
+                    if valid_prices >= min_valid:
                         price_col_indices.append(idx)
-                    else:
-                        is_num = False
-                        for r_i in range(min(5, len(df_file))):
-                            v = df_file.iloc[r_i, idx]
-                            if pd.notna(v) and isinstance(v, (int, float)):
-                                is_num = True
-                                break
-                        if is_num:
-                            price_col_indices.append(idx)
 
                 if price_col_indices:
                     p25_col = raw_cols[price_col_indices[0]]
-                    p100_col = raw_cols[price_col_indices[-1]] if len(price_col_indices) > 1 else None
+                    p100_col = raw_cols[price_col_indices[-1]]
                 else:
                     p25_col = pick_price_column(raw_cols, price_c)
-                    p100_col = None
+                    p100_col = p25_col
+
             
             if not name_col:
                 raise ValueError("Не найдена колонка наименования препарата.")

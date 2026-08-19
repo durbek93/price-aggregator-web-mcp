@@ -475,3 +475,5 @@ async def handle_bot_mention_in_group(message: Message) -> None:
         await message.answer(f"❌ Не удалось связаться с Агентом-Сборщиком: {str(e)}")
 
 
+
+

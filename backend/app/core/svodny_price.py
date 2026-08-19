@@ -45,7 +45,8 @@ from app.core.excel_reader import (
     resolve_price_column_for_sheet,
     _excel_engine_for,
     _grand_farm_header_row,
-    read_price_table
+    read_price_table,
+    load_distributor_rules
 )
 
 # Импорт функций из grouping

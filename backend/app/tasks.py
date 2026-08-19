@@ -291,6 +291,24 @@ def run_pipeline_task(self, task_record_id: int) -> Dict[str, Any]:
                 caption = f"✅ Задача {task_type} успешно выполнена!\n📄 Результат: {out_path.name}"
                 send_telegram_doc_sync(user.telegram_id, str(out_path), caption)
 
+            # Notify Debugger Agent to verify output
+            if task_type in ["svodny_horizontal", "svodny_vertical"]:
+                try:
+                    import urllib.request
+                    req = urllib.request.Request(
+                        "http://debugger_agent:8001/audit",
+                        data=b"{}",
+                        headers={
+                            "X-Internal-Key": getattr(settings, "INTERNAL_API_KEY", "11121993_29081966"),
+                            "Content-Type": "application/json"
+                        },
+                        method="POST"
+                    )
+                    urllib.request.urlopen(req, timeout=3)
+                    logger.info("Successfully notified debugger_agent for audit.")
+                except Exception as ex:
+                    logger.debug(f"debugger_agent notification skipped or unreachable: {ex}")
+
             return {"status": "completed", "result": result_msg, "file": out_path.name}
         else:
             # Если нет файла (например, для "cheapest", если файлы не нашлись)

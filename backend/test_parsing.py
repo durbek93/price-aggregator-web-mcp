@@ -105,6 +105,7 @@ for p in sorted(upload_dir.glob("*")):
         elif "biotek" in p.name.lower() or "биотек" in p.name.lower():
             raw_cols = list(df.columns)
             name_col_idx = raw_cols.index(name_col) if name_col in raw_cols else None
+            min_valid = min(10, max(2, int(len(df) * 0.1)))
             price_col_indices = []
             for idx, col in enumerate(raw_cols):
                 if name_col_idx is not None and idx <= name_col_idx:
@@ -112,14 +113,21 @@ for p in sorted(upload_dir.glob("*")):
                 c_str = str(col).lower().replace("–", "-").replace("—", "-").replace("−", "-").strip()
                 if any(x in c_str for x in ["заказ", "орг. уп", "орг.уп", "произ.", "производитель", "годности", "годность"]):
                     break
-                if "цена" in c_str or any(x in c_str for x in ["-2", "-3", "-4", "-5", "-0.02", "-0.03", "-0.04", "-0.05"]) or c_str.startswith("unnamed"):
+                valid_prices = 0
+                for v in df.iloc[:, idx].dropna():
+                    try:
+                        if float(v) > 500:
+                            valid_prices += 1
+                    except (ValueError, TypeError):
+                        pass
+                if valid_prices >= min_valid:
                     price_col_indices.append(idx)
             if price_col_indices:
                 p25_col = raw_cols[price_col_indices[0]]
-                p100_col = raw_cols[price_col_indices[-1]] if len(price_col_indices) > 1 else None
+                p100_col = raw_cols[price_col_indices[-1]]
             else:
                 p25_col = pick_price_column(raw_cols, price_c)
-                p100_col = None
+                p100_col = p25_col
         print(f"RESULT -> name_col: '{name_col}', p25_col: '{p25_col}', p100_col: '{p100_col}'")
     except Exception as ex:
         print("ERROR processing file:", ex)

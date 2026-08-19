@@ -144,10 +144,30 @@ def pick_price_column(columns: List[str], candidates: List[str]) -> Optional[str
     return best[2]
 
 
+def load_distributor_rules() -> Dict[str, Any]:
+    for p in [Path("/app/data/distributor_rules.json"), Path(__file__).parent.parent.parent / "data" / "distributor_rules.json"]:
+        if p.exists():
+            try:
+                import json
+                with open(p, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+    return {}
+
+
 def resolve_price_column_for_sheet(df: pd.DataFrame, path: Path, price_candidates: List[str]) -> Optional[str]:
     name_low = path.name.lower()
     cols = list(df.columns)
     
+    rules = load_distributor_rules()
+    for r_k, r_v in rules.items():
+        if r_k.lower() in name_low:
+            if r_v.get("p100_col") and r_v["p100_col"] in cols:
+                return r_v["p100_col"]
+            if r_v.get("p25_col") and r_v["p25_col"] in cols:
+                return r_v["p25_col"]
+
     if "meros" in name_low or "мерос" in name_low:
         for col in cols:
             c_low = str(col).lower().strip()
@@ -211,26 +231,30 @@ def resolve_price_column_for_sheet(df: pd.DataFrame, path: Path, price_candidate
                         break
                 except (ValueError, TypeError):
                     pass
-                    
+
         if not found_col:
-            for r_idx in range(min(10, len(df))):
-                row = df.iloc[r_idx]
-                for col in df.columns:
-                    val = row.get(col)
-                    if val is not None:
-                        val_str = str(val).strip()
-                        if "-0.03" in val_str or "-3" in val_str or "-3%" in val_str or "-0.04" in val_str or "-4" in val_str or "-4%" in val_str:
-                            found_col = col
-                            break
-                        try:
-                            f_val = float(val)
-                            if abs(f_val + 0.03) < 0.001 or abs(f_val + 0.04) < 0.001:
-                                found_col = col
-                                break
-                        except (ValueError, TypeError):
-                            pass
-                if found_col:
+            raw_cols = list(df.columns)
+            name_col = pick_column(raw_cols, DEFAULT_NAME_CANDIDATES)
+            name_col_idx = raw_cols.index(name_col) if name_col in raw_cols else None
+            min_valid = min(10, max(2, int(len(df) * 0.1)))
+            valid_price_cols = []
+            for idx, col in enumerate(raw_cols):
+                if name_col_idx is not None and idx <= name_col_idx:
+                    continue
+                c_str = str(col).lower().replace("–", "-").replace("—", "-").replace("−", "-").strip()
+                if any(x in c_str for x in ["заказ", "орг. уп", "орг.уп", "произ.", "производитель", "годности", "годность"]):
                     break
+                valid_prices = 0
+                for v in df.iloc[:, idx].dropna():
+                    try:
+                        if float(v) > 500:
+                            valid_prices += 1
+                    except (ValueError, TypeError):
+                        pass
+                if valid_prices >= min_valid:
+                    valid_price_cols.append(col)
+            if valid_price_cols:
+                found_col = valid_price_cols[-1]
                     
         if found_col:
             return found_col

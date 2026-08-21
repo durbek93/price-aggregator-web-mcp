@@ -282,8 +282,8 @@ def _grand_farm_header_row(
     try:
         ws = wb.active
         for excel_row_1based, row in enumerate(
-            ws.iter_rows(min_row=2500, max_row=5000, values_only=True),
-            start=2500,
+            ws.iter_rows(min_row=1, max_row=5000, values_only=True),
+            start=1,
         ):
             normed: set = set()
             for v in row:

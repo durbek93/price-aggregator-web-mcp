@@ -304,6 +304,13 @@ def match_product_to_template(product_name: str, template_products: List[Tuple[i
     def contains_any(word: str, substrings: List[str]) -> bool:
         return any(x in word for x in substrings)
 
+    # 0. Ergoferon
+    if "эргоферон" in p_norm_clean or "эргоферон" in orig_norm_clean or "ergoferon" in p_norm_clean or "ergoferon" in orig_norm_clean:
+        for row_idx, t_name in template_products:
+            t_low = t_name.lower()
+            if "эргоферон" in t_low or "ergoferon" in t_low:
+                return row_idx
+
     # 1. Anaferon
     if "анаферон" in p_norm_clean or "анаферон" in orig_norm_clean:
         is_drops = contains_any(p_norm_clean, ["капл", "25мл", "25 мл"]) or contains_any(orig_norm_clean, ["капл", "25мл", "25 мл"])

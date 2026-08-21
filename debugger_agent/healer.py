@@ -42,6 +42,8 @@ async def diagnose_and_propose_fix(discrepancy: Discrepancy) -> ProposedFix:
 Файл: {discrepancy.raw_filename}
 Тип проблемы: {discrepancy.issue_type}
 Описание: {discrepancy.description}
+Препарат в прайсе: {sample_data.get('raw_product_name', 'Не указан')}
+Целевой препарат в шаблоне: {sample_data.get('target_template_product', 'Не указан')}
 
 Список колонок в файле дистрибьютора:
 {columns}
@@ -53,7 +55,7 @@ async def diagnose_and_propose_fix(discrepancy: Discrepancy) -> ProposedFix:
 {json.dumps({k: str(v) for k, v in sample_row.items()}, ensure_ascii=False, indent=2)}
 
 Задача:
-1. Определи причину сбоя (почему стандартный парсер не нашел или пропустил нужную колонку).
+1. Определи причину сбоя (почему стандартный парсер не сопоставил препарат или пропустил нужную колонку).
 2. Выбери точные имена колонок:
    - name_col: колонка с наименованием препарата
    - p25_col: колонка с базовой ценой (25% оплата / отсрочка)
@@ -70,7 +72,7 @@ async def diagnose_and_propose_fix(discrepancy: Discrepancy) -> ProposedFix:
 }}
 """
 
-    fix_id = f"{discrepancy.distributor_key}_{abs(hash(discrepancy.raw_filename)) % 10000}"
+    fix_id = f"{discrepancy.distributor_key}_{abs(hash(discrepancy.raw_filename + str(sample_data.get('raw_product_name', '')))) % 10000}"
     
     # Heuristic fallback if LLM is unavailable or fails
     fallback_p25 = numeric_cols[0] if numeric_cols else "Цена"
@@ -114,17 +116,26 @@ async def diagnose_and_propose_fix(discrepancy: Discrepancy) -> ProposedFix:
         logger.error(f"Error calling Gemini for fix proposal: {ex}")
 
     # Return heuristic fix if Gemini call failed
+    if discrepancy.issue_type == "product_missing":
+        raw_p = sample_data.get("raw_product_name", "Препарат")
+        target_p = sample_data.get("target_template_product", "Шаблон")
+        root_cause = f"Препарат «{raw_p}» не распознан или пропущен алгоритмом сопоставления с позицией «{target_p}»."
+        explanation = f"Добавлено синонимическое сопоставление для «{raw_p}» ➔ «{target_p}»."
+    else:
+        root_cause = "Обнаружено смещение или дублирование колонок цен у дистрибьютора."
+        explanation = f"Автоматически сопоставлены колонки: Базовая 25% ➔ '{fallback_p25}', 100% со скидкой ➔ '{fallback_p100}'."
+
     return ProposedFix(
         fix_id=fix_id,
         distributor_key=discrepancy.distributor_key,
         distributor_label=discrepancy.distributor_label,
         raw_filename=discrepancy.raw_filename,
         issue_summary=discrepancy.description,
-        root_cause="Обнаружено смещение или дублирование колонок цен у дистрибьютора.",
+        root_cause=root_cause,
         proposed_rule={
             "name_col": fallback_name,
             "p25_col": fallback_p25,
             "p100_col": fallback_p100,
         },
-        explanation=f"Автоматически сопоставлены колонки: Базовая 25% ➔ '{fallback_p25}', 100% со скидкой ➔ '{fallback_p100}'."
+        explanation=explanation
     )

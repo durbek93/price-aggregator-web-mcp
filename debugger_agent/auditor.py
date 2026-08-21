@@ -33,6 +33,27 @@ MATERIA_SYNONYMS = {
     "кардос": ["кардос", "kardos"],
 }
 
+MATERIA_KEY_TO_TEMPLATE_PRODUCT = {
+    "эргоферон": "Эргоферон №20",
+    "анаферон детский": "Анаферон детский №20",
+    "анаферон детский капли": "Анаферон детский №20 капли",
+    "анаферон": "Анаферон №20",
+    "ренгалин таб": "Ренгалин таб №20",
+    "ренгалин раствор": "Ренгалин раствор 100 мл",
+    "тенотен": "Тенотен №20",
+    "тенотен детский": "Тенотен детский №20",
+    "диваза": "Диваза №100",
+    "колофорт": "Колофорт №100",
+    "афалаза": "Афалаза таб № 100",
+    "афала": "Афала №100",
+    "импаза": "Импаза №20",
+    "климаксан гр": "Климаксан гр  10 гр",
+    "климаксан таб": "Климаксан таб №20",
+    "млекоин": "Млекоин гр 10 гр",
+    "успокой": "Успокой №20",
+    "фарингомед": "Фарингомед №20",
+}
+
 DISTRIBUTOR_MAP = {
     "zenta": {"label": "ЗЕНТА ФАРМ", "col_25": 3, "col_100": 4, "patterns": ["zenta", "зента"]},
     "grand": {"label": "ГРАНД ФАРМ", "col_25": 5, "col_100": 6, "patterns": ["grand", "гранд"]},
@@ -77,7 +98,7 @@ def _read_excel_file(path: Path) -> pd.DataFrame:
         
         # Find header row
         hdr_idx = 0
-        for r_i in range(min(30, len(df_raw))):
+        for r_i in range(min(500, len(df_raw))):
             row_vals = [str(x).lower().strip() for x in df_raw.iloc[r_i] if pd.notna(x)]
             if any(k in row_vals for k in ["наименование", "название", "товар", "номенклатура", "препарат", "медикамент"]):
                 hdr_idx = r_i
@@ -261,6 +282,92 @@ def audit_svodny_price(svodny_path: Path, upload_dir: Path) -> AuditReport:
                         "sample_row": materia_rows[0][0].to_dict() if materia_rows else {}
                     }
                 ))
+
+            # Check 3: Missing specific Materia Medica products found in raw file
+            elif not (all_25_none and all_100_none):
+                seen_missing_target = set()
+                for m_row, key_term in materia_rows:
+                    target_prod = MATERIA_KEY_TO_TEMPLATE_PRODUCT.get(key_term)
+                    if not target_prod or target_prod in seen_missing_target:
+                        continue
+                    
+                    # Check if price exists in this raw row
+                    has_price = False
+                    for c in numeric_cols:
+                        v = m_row.get(c)
+                        try:
+                            if pd.notna(v) and float(v) > 500:
+                                has_price = True
+                                break
+                        except (ValueError, TypeError):
+                            pass
+                    if not has_price:
+                        continue
+
+                    raw_product_name = str(m_row.get(name_col, "")).strip()
+                    val_25 = sheet_prices_25.get(target_prod)
+                    val_100 = sheet_prices_100.get(target_prod) if col_100 else None
+
+                    is_100_file = "100" in raw_path.name.lower()
+                    is_25_file = "25" in raw_path.name.lower()
+
+                    if is_100_file:
+                        if col_100 and val_100 is None:
+                            seen_missing_target.add(target_prod)
+                            discrepancies.append(Discrepancy(
+                                distributor_key=dist_key,
+                                distributor_label=dist_label,
+                                raw_filename=raw_path.name,
+                                raw_filepath=raw_path,
+                                issue_type="product_missing",
+                                description=f"Дистрибьютор {dist_label}: в файле {raw_path.name} найден препарат «{raw_product_name}», но колонка 100% для «{target_prod}» в сводном прайсе пустая.",
+                                affected_products=[target_prod],
+                                raw_sample_data={
+                                    "columns": list(df_raw.columns),
+                                    "numeric_price_cols": numeric_cols,
+                                    "raw_product_name": raw_product_name,
+                                    "target_template_product": target_prod,
+                                    "sample_row": m_row.to_dict()
+                                }
+                            ))
+                    elif is_25_file:
+                        if col_25 and val_25 is None:
+                            seen_missing_target.add(target_prod)
+                            discrepancies.append(Discrepancy(
+                                distributor_key=dist_key,
+                                distributor_label=dist_label,
+                                raw_filename=raw_path.name,
+                                raw_filepath=raw_path,
+                                issue_type="product_missing",
+                                description=f"Дистрибьютор {dist_label}: в файле {raw_path.name} найден препарат «{raw_product_name}», но колонка 25% для «{target_prod}» в сводном прайсе пустая.",
+                                affected_products=[target_prod],
+                                raw_sample_data={
+                                    "columns": list(df_raw.columns),
+                                    "numeric_price_cols": numeric_cols,
+                                    "raw_product_name": raw_product_name,
+                                    "target_template_product": target_prod,
+                                    "sample_row": m_row.to_dict()
+                                }
+                            ))
+                    else:
+                        if val_25 is None and (col_100 is None or val_100 is None):
+                            seen_missing_target.add(target_prod)
+                            discrepancies.append(Discrepancy(
+                                distributor_key=dist_key,
+                                distributor_label=dist_label,
+                                raw_filename=raw_path.name,
+                                raw_filepath=raw_path,
+                                issue_type="product_missing",
+                                description=f"Дистрибьютор {dist_label}: в файле {raw_path.name} найден препарат «{raw_product_name}», но ячейка «{target_prod}» в сводном прайсе пустая.",
+                                affected_products=[target_prod],
+                                raw_sample_data={
+                                    "columns": list(df_raw.columns),
+                                    "numeric_price_cols": numeric_cols,
+                                    "raw_product_name": raw_product_name,
+                                    "target_template_product": target_prod,
+                                    "sample_row": m_row.to_dict()
+                                }
+                            ))
 
     is_valid = (len(discrepancies) == 0)
     if is_valid:

@@ -95,10 +95,10 @@ price-aggregator-web/
 ├── .env.example                 # Шаблон переменных окружения
 ├── README.md                    # Основное руководство пользователя (Этот файл)
 ├── architecture_plan.md         # Архитектурный план экосистемы
-├── Шаблон.xlsx                  # Базовый Excel-шаблон сводной матрицы
 │
 ├── backend/                     # Бэкенд на FastAPI и Бот-Агрегатор
 │   ├── Dockerfile
+│   ├── Шаблон.xlsx              # Базовый Excel-шаблон сводной матрицы
 │   ├── requirements.txt         # FastAPI, SQLAlchemy, Celery, openpyxl, rapidfuzz, aiogram
 │   ├── test_refactoring.py      # Интеграционные тесты ядра
 │   └── app/

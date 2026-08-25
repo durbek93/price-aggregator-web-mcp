@@ -23,35 +23,77 @@ class FileService:
         return clean_name
 
     @staticmethod
-    def archive_existing_input_file(db: Session, user_id: int, filename: str, user_upload_dir: Path):
-        """Если активный файл с таким именем уже существует, переносит его в историю на диске и в БД."""
-        filename = FileService.sanitize_user_filename(filename)
-        existing_file = db.query(FileRecord).filter(
-            FileRecord.user_id == user_id,
-            FileRecord.filename == filename,
-            FileRecord.file_type == "input"
-        ).first()
+    def get_distributor_variant_key(filename: str) -> Optional[str]:
+        """Определяет ключ дистрибьютора с учетом варианта (100% / 25%)."""
+        name_low = filename.lower()
+        if "grand" in name_low or "гранд" in name_low:
+            variant = "100" if "100" in name_low else "25"
+            return f"grand_{variant}"
+        if "promotion" in name_low or "промоушен" in name_low:
+            variant = "100" if "100" in name_low else "25"
+            return f"promotion_{variant}"
+        if "luxe" in name_low or "люкс" in name_low:
+            variant = "100" if "100" in name_low else "25"
+            return f"luxe_{variant}"
+        if "zenta" in name_low or "зента" in name_low:
+            return "zenta"
+        if "biotek" in name_low or "биотек" in name_low:
+            return "biotek"
+        if "meros" in name_low or "мерос" in name_low:
+            return "meros"
+        if "choice" in name_low or "чойс" in name_low:
+            return "choice"
+        if "aero" in name_low or "аэро" in name_low:
+            return "aero"
+        if "delpharm" in name_low or "дельфарм" in name_low:
+            return "delpharm"
+        if "asklepiy" in name_low or "асклепий" in name_low:
+            return "asklepiy"
+        return None
 
-        if existing_file:
-            history_dir = user_upload_dir / "history"
-            history_dir.mkdir(parents=True, exist_ok=True)
-            
+    @staticmethod
+    def archive_existing_input_file(db: Session, user_id: int, filename: str, user_upload_dir: Path):
+        """Архивирует существующие файлы с тем же именем или того же дистрибьютора в историю."""
+        filename = FileService.sanitize_user_filename(filename)
+        incoming_dist_key = FileService.get_distributor_variant_key(filename)
+
+        existing_files = db.query(FileRecord).filter(
+            FileRecord.user_id == user_id,
+            FileRecord.file_type == "input"
+        ).all()
+
+        files_to_archive = []
+        for ef in existing_files:
+            if ef.filename == filename:
+                files_to_archive.append(ef)
+            elif incoming_dist_key and FileService.get_distributor_variant_key(ef.filename) == incoming_dist_key:
+                files_to_archive.append(ef)
+
+        history_dir = user_upload_dir / "history"
+        history_dir.mkdir(parents=True, exist_ok=True)
+
+        for ef in files_to_archive:
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            history_filename = f"{Path(filename).stem}_{timestamp}{Path(filename).suffix}"
+            history_filename = f"{Path(ef.filename).stem}_{timestamp}{Path(ef.filename).suffix}"
             history_storage_path = history_dir / history_filename
             
-            old_file_path = Path(existing_file.storage_path)
+            old_file_path = Path(ef.storage_path)
             if old_file_path.exists():
                 try:
                     shutil.move(str(old_file_path), str(history_storage_path))
                 except Exception:
                     shutil.copy2(str(old_file_path), str(history_storage_path))
-                    os.remove(str(old_file_path))
+                    try:
+                        os.remove(str(old_file_path))
+                    except Exception:
+                        pass
             
-            existing_file.filename = history_filename
-            existing_file.display_name = history_filename
-            existing_file.storage_path = str(history_storage_path)
-            existing_file.file_type = "input_history"
+            ef.filename = history_filename
+            ef.display_name = history_filename
+            ef.storage_path = str(history_storage_path)
+            ef.file_type = "input_history"
+            
+        if files_to_archive:
             db.commit()
 
     @staticmethod

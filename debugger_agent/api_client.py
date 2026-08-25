@@ -41,7 +41,8 @@ def save_distributor_rule(distributor_key: str, rule: Dict[str, Any]) -> bool:
 async def trigger_rerun_pipeline() -> Optional[int]:
     """Triggers svodny_horizontal task via backend internal API."""
     headers = {
-        "X-Internal-Key": config.INTERNAL_API_KEY,
+        "X-Internal-API-Key": config.INTERNAL_API_KEY,
+        "X-Target-User-ID": "1",
         "Content-Type": "application/json"
     }
     payload = {
@@ -69,7 +70,10 @@ async def trigger_rerun_pipeline() -> Optional[int]:
 
 async def wait_for_task_completion(task_id: int, timeout_sec: int = 90) -> bool:
     """Polls backend until task is completed or failed."""
-    headers = {"X-Internal-Key": config.INTERNAL_API_KEY}
+    headers = {
+        "X-Internal-API-Key": config.INTERNAL_API_KEY,
+        "X-Target-User-ID": "1"
+    }
     start_time = asyncio.get_event_loop().time()
     while (asyncio.get_event_loop().time() - start_time) < timeout_sec:
         try:

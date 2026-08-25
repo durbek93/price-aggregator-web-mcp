@@ -267,6 +267,20 @@ def pick_price_columns(columns: List[str], candidates: List[str]) -> Tuple[Optio
     return col_25, col_100
 
 
+def _find_matching_col(target: Optional[str], columns: List[Any]) -> Optional[str]:
+    """Гибкий поиск колонки по имени (с нормализацией пробелов, регистра и .1 <-> _1)."""
+    if not target:
+        return None
+    str_cols = [str(c) for c in columns]
+    if target in str_cols:
+        return target
+    t_clean = str(target).strip().lower().replace(".", "_").replace(" ", "")
+    for col in str_cols:
+        c_clean = col.strip().lower().replace(".", "_").replace(" ", "")
+        if c_clean == t_clean:
+            return col
+    return None
+
 
 def find_distributor_columns(label: str) -> Optional[Tuple[int, Optional[int]]]:
     """Возвращает 1-based колонки (col_25, col_100) из шаблона Шаблон.xlsx."""
@@ -565,7 +579,9 @@ def run_svodny_horizontal(
 ) -> Path:
     template_path = Path("/app/Шаблон.xlsx")
     if not template_path.exists():
-        template_path = Path(__file__).parent.parent.joinpath("Шаблон.xlsx")
+        template_path = Path(__file__).resolve().parents[2] / "Шаблон.xlsx"
+    if not template_path.exists():
+        template_path = Path(__file__).resolve().parents[1] / "Шаблон.xlsx"
         
     if not template_path.exists():
         raise FileNotFoundError(f"Шаблон.xlsx не найден: {template_path}")
@@ -607,9 +623,44 @@ def run_svodny_horizontal(
         filepath = upload_dir / e["filename"]
         if filepath.is_file():
             valid_entries.append(e)
+
+    # Автоматическая дедупликация: если для одного дистрибьютора есть несколько файлов, берем только самый свежий
+    distributor_files: Dict[str, Dict[str, Any]] = {}
+    other_entries: List[Dict[str, Any]] = []
+
+    for e in valid_entries:
+        filepath = upload_dir / e["filename"]
+        lbl = _display_label(e.get("display_name", ""), e["filename"])
+        col_mapping = find_distributor_columns(lbl)
+        if not col_mapping:
+            other_entries.append(e)
+            continue
+
+        fn_low = filepath.name.lower()
+        lbl_low = lbl.lower()
+        dist_key = f"{col_mapping[0]}_{col_mapping[1]}"
+        if any(d in lbl_low or d in fn_low for d in ["grand", "гранд", "promotion", "промоушен", "luxe", "люкс"]):
+            variant = "100" if "100" in fn_low else "25"
+            dist_key = f"{dist_key}_{variant}"
+
+        mtime = filepath.stat().st_mtime if filepath.exists() else 0
+        if dist_key in distributor_files:
+            existing_path = upload_dir / distributor_files[dist_key]["filename"]
+            existing_mtime = existing_path.stat().st_mtime if existing_path.exists() else 0
+            if mtime > existing_mtime:
+                if progress:
+                    progress(f"ℹ️ Для дистрибьютора '{lbl}' выбран более свежий файл '{filepath.name}', устаревший дубликат '{distributor_files[dist_key]['filename']}' пропущен")
+                distributor_files[dist_key] = e
+            else:
+                if progress:
+                    progress(f"ℹ️ Для дистрибьютора '{lbl}' пропущен устаревший дубликат '{filepath.name}' (используется более свежий '{distributor_files[dist_key]['filename']}')")
+        else:
+            distributor_files[dist_key] = e
+
+    deduped_entries = list(distributor_files.values()) + other_entries
             
-    total = len(valid_entries)
-    for i, e in enumerate(valid_entries, 1):
+    total = len(deduped_entries)
+    for i, e in enumerate(deduped_entries, 1):
         path = upload_dir / e["filename"]
         if progress:
             progress(f"Обработка [{i}/{total}]: {path.name}")
@@ -650,12 +701,15 @@ def run_svodny_horizontal(
                     break
             
             if rule:
-                if rule.get("name_col") and rule["name_col"] in df_file.columns:
-                    name_col = rule["name_col"]
-                if rule.get("p25_col") and rule["p25_col"] in df_file.columns:
-                    p25_col = rule["p25_col"]
-                if rule.get("p100_col") and rule["p100_col"] in df_file.columns:
-                    p100_col = rule["p100_col"]
+                matched_name = _find_matching_col(rule.get("name_col"), list(df_file.columns))
+                if matched_name:
+                    name_col = matched_name
+                matched_p25 = _find_matching_col(rule.get("p25_col"), list(df_file.columns))
+                if matched_p25:
+                    p25_col = matched_p25
+                matched_p100 = _find_matching_col(rule.get("p100_col"), list(df_file.columns))
+                if matched_p100:
+                    p100_col = matched_p100
             elif "meros" in path.name.lower() or "мерос" in path.name.lower():
                 # For Meros Pharm, find column for 25% and 100% manually
                 for col in df_file.columns:
@@ -744,10 +798,21 @@ def run_svodny_horizontal(
                     p25_col = col_price
                 else:
                     p25_col, p100_col = pick_price_columns(list(df_file.columns), price_c)
-            elif "biotek" in path.name.lower() or "биотек" in path.name.lower():
+            elif "biotek" in path.name.lower() or "биотек" in path.name.lower() or "biotek" in lbl.lower() or "биотек" in lbl.lower():
                 # For Biotek Pharm
                 raw_cols = list(df_file.columns)
                 name_col_idx = raw_cols.index(name_col) if name_col in raw_cols else None
+
+                # Look for explicit discount columns
+                explicit_100_col = None
+                explicit_25_col = None
+                for col in raw_cols:
+                    c_clean = str(col).strip().lower().replace("–", "-").replace("—", "-").replace("−", "-")
+                    if any(c_clean == t or c_clean.replace(" ", "") == t.replace(" ", "") for t in ["цена-4", "цена 4", "цена - 4", "-4", "-4%", "цена-3", "цена 3", "цена - 3", "-3", "-3%", "цена-2", "цена 2", "цена - 2", "-2", "-2%", "100%", "цена 100%"]):
+                        explicit_100_col = col
+                    if c_clean in ["цена", "базовая цена", "отпускная цена", "отп.цена", "цена без скидки"]:
+                        if not explicit_25_col:
+                            explicit_25_col = col
 
                 min_valid = min(10, max(2, int(len(df_file) * 0.1)))
                 price_col_indices = []
@@ -755,7 +820,7 @@ def run_svodny_horizontal(
                     if name_col_idx is not None and idx <= name_col_idx:
                         continue
                     c_str = str(col).lower().replace("–", "-").replace("—", "-").replace("−", "-").strip()
-                    if any(x in c_str for x in ["заказ", "орг. уп", "орг.уп", "произ.", "производитель", "годности", "годность"]):
+                    if any(x in c_str for x in ["заказ", "орг. уп", "орг.уп", "произ.", "производитель", "годности", "годность", "остаток", "наличие"]):
                         break
 
                     valid_prices = 0
@@ -768,9 +833,18 @@ def run_svodny_horizontal(
                     if valid_prices >= min_valid:
                         price_col_indices.append(idx)
 
-                if price_col_indices:
+                if explicit_25_col and explicit_100_col:
+                    p25_col = explicit_25_col
+                    p100_col = explicit_100_col
+                elif explicit_100_col and price_col_indices:
+                    p25_col = raw_cols[price_col_indices[0]]
+                    p100_col = explicit_100_col
+                elif len(price_col_indices) >= 2:
                     p25_col = raw_cols[price_col_indices[0]]
                     p100_col = raw_cols[price_col_indices[-1]]
+                elif price_col_indices:
+                    p25_col = raw_cols[price_col_indices[0]]
+                    p100_col = raw_cols[price_col_indices[0]]
                 else:
                     p25_col = pick_price_column(raw_cols, price_c)
                     p100_col = p25_col

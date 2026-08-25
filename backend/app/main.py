@@ -56,11 +56,11 @@ class LimitUploadSizeMiddleware(BaseHTTPMiddleware):
             if content_length and int(content_length) > self.max_upload_size:
                 return JSONResponse(
                     status_code=413,
-                    content={"detail": "Размер файла превышает лимит в 20МБ"}
+                    content={"detail": "Размер файла превышает лимит в 50МБ"}
                 )
         return await call_next(request)
 
-app.add_middleware(LimitUploadSizeMiddleware, max_upload_size=20 * 1024 * 1024)
+app.add_middleware(LimitUploadSizeMiddleware, max_upload_size=50 * 1024 * 1024)
 
 app.include_router(api_router)
 

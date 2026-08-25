@@ -444,14 +444,19 @@ async def handle_bot_mention_in_group(message: Message) -> None:
     else:
         start_msg = "⏳ Запрос на сбор прайс-листов получен. Начинаю опрашивать каналы дистрибьюторов..."
         
-    logger.info(f"User {tg_user.id} triggered collection (is_fetch_only={is_fetch_only}, endpoint={endpoint_path}).")
-    await message.answer(start_msg)
+    sent_msg = await message.answer(start_msg)
     
     # Отправляем POST запрос к Scout Agent
     try:
+        import json
         url = f"http://scout_agent:8080{endpoint_path}"
-        req = urllib.request.Request(url, method="POST")
+        payload = json.dumps({
+            "chat_id": message.chat.id,
+            "message_id": sent_msg.message_id
+        }).encode("utf-8")
+        req = urllib.request.Request(url, data=payload, method="POST")
         req.add_header("X-Internal-API-Key", settings.INTERNAL_API_KEY)
+        req.add_header("Content-Type", "application/json")
         
         loop = asyncio.get_running_loop()
         

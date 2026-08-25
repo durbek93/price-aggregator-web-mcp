@@ -73,10 +73,36 @@ async def send_scout_telegram_report(text: str):
         logger.error(f"Failed to send Telegram report from Scout Agent: {e}")
 
 
-async def collect_latest_files(trigger_aggregation: bool = True) -> Tuple[bool, int]:
+async def edit_telegram_message(chat_id: Optional[int], message_id: Optional[int], text: str):
+    """Динамически обновляет сообщение в Telegram для отображения живого прогресса."""
+    bot_token = config.TELEGRAM_BOT_TOKEN or os.getenv("TELEGRAM_BOT_TOKEN", "")
+    if not bot_token or not chat_id or not message_id:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                url,
+                json={
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": text,
+                    "parse_mode": "HTML"
+                },
+                timeout=10.0
+            )
+    except Exception as e:
+        logger.debug(f"Failed to edit telegram progress message: {e}")
+
+
+async def collect_latest_files(
+    trigger_aggregation: bool = True,
+    chat_id: Optional[int] = None,
+    message_id: Optional[int] = None
+) -> Tuple[bool, int]:
     """
     Опрашивает каналы дистрибьюторов, скачивает самые свежие прайс-листы (100% и 25%),
-    загружает их на бэкенд и (опционально) запускает построение сводного прайса.
+    загружает их на бэкенд и (опционально) запускает построение сводного прайса с живым отчетом.
     """
     logger.info(f"Starting collection of latest files from distributor channels (trigger_aggregation={trigger_aggregation})...")
     uploaded_ids = []
@@ -92,8 +118,23 @@ async def collect_latest_files(trigger_aggregation: bool = True) -> Tuple[bool, 
     except Exception as e:
         logger.warning(f"Failed to pre-cache dialogs: {e}")
     
-    for channel in config.DISTRIBUTOR_CHANNELS:
-        logger.info(f"Processing distributor channel/chat: {channel}")
+    total_channels = len(config.DISTRIBUTOR_CHANNELS)
+    for ch_idx, channel in enumerate(config.DISTRIBUTOR_CHANNELS, 1):
+        logger.info(f"Processing distributor channel/chat [{ch_idx}/{total_channels}]: {channel}")
+        
+        # Обновляем живой статус в Telegram
+        if chat_id and message_id:
+            percent = int(((ch_idx - 1) / total_channels) * 100)
+            filled = (ch_idx - 1) * 10 // total_channels
+            bar = "■" * filled + "□" * (10 - filled)
+            progress_text = (
+                f"⏳ <b>Сбор прайс-листов в процессе... [{ch_idx}/{total_channels}]</b>\n\n"
+                f"🔍 <b>Опрашиваю канал:</b> <code>{channel}</code>\n"
+                f"📊 <b>Прогресс:</b> <code>[{bar}] {percent}%</code>\n"
+                f"📁 <b>Скачано файлов:</b> {len(uploaded_ids)}"
+            )
+            await edit_telegram_message(chat_id, message_id, progress_text)
+            
         try:
             chat = await app.get_chat(channel)
             chat_title = chat.title or chat.first_name or str(channel)
@@ -176,6 +217,20 @@ async def collect_latest_files(trigger_aggregation: bool = True) -> Tuple[bool, 
                     if file_id:
                         uploaded_ids.append(file_id)
                         download_summary.setdefault(cleaned_name, []).append(target_name)
+                
+                if chat_id and message_id:
+                    percent = int((ch_idx / total_channels) * 100)
+                    filled = ch_idx * 10 // total_channels
+                    bar = "■" * filled + "□" * (10 - filled)
+                    saved_names = ", ".join([t[1] for t in targets])
+                    progress_text = (
+                        f"⏳ <b>Сбор прайс-листов в процессе... [{ch_idx}/{total_channels}]</b>\n\n"
+                        f"🏢 <b>Дистрибьютор:</b> {cleaned_name}\n"
+                        f"📥 <i>Скачан:</i> <code>{saved_names}</code>\n"
+                        f"📊 <b>Прогресс:</b> <code>[{bar}] {percent}%</code>\n"
+                        f"📁 <b>Всего скачано:</b> {len(uploaded_ids)} файлов"
+                    )
+                    await edit_telegram_message(chat_id, message_id, progress_text)
                 continue
                 
             elif is_luxe:
@@ -340,6 +395,18 @@ async def collect_latest_files(trigger_aggregation: bool = True) -> Tuple[bool, 
             if file_id:
                 uploaded_ids.append(file_id)
                 download_summary.setdefault(cleaned_name, []).append(temp_filename)
+                if chat_id and message_id:
+                    percent = int((ch_idx / total_channels) * 100)
+                    filled = ch_idx * 10 // total_channels
+                    bar = "■" * filled + "□" * (10 - filled)
+                    progress_text = (
+                        f"⏳ <b>Сбор прайс-листов в процессе... [{ch_idx}/{total_channels}]</b>\n\n"
+                        f"🏢 <b>Дистрибьютор:</b> {cleaned_name}\n"
+                        f"📥 <i>Скачан:</i> <code>{temp_filename}</code>\n"
+                        f"📊 <b>Прогресс:</b> <code>[{bar}] {percent}%</code>\n"
+                        f"📁 <b>Всего скачано:</b> {len(uploaded_ids)} файлов"
+                    )
+                    await edit_telegram_message(chat_id, message_id, progress_text)
                 
         except Exception as e:
             logger.exception(f"Error processing channel {channel}: {e}")
@@ -349,6 +416,13 @@ async def collect_latest_files(trigger_aggregation: bool = True) -> Tuple[bool, 
     if uploaded_ids:
         if trigger_aggregation:
             logger.info(f"Successfully collected and uploaded {len(uploaded_ids)} files. Triggering aggregation...")
+            if chat_id and message_id:
+                final_msg = (
+                    f"✅ <b>Сбор файлов завершен!</b>\n\n"
+                    f"📊 Всего скачано: <b>{len(uploaded_ids)} файлов</b> с {total_channels} каналов.\n"
+                    f"⚙️ <i>Запускаю формирование сводного прайса...</i>"
+                )
+                await edit_telegram_message(chat_id, message_id, final_msg)
             success = await trigger_aggregation_task(uploaded_ids)
         else:
             logger.info(f"Successfully collected and uploaded {len(uploaded_ids)} files (download-only). Sending Telegram report...")
@@ -365,11 +439,17 @@ async def collect_latest_files(trigger_aggregation: bool = True) -> Tuple[bool, 
             lines.append("<i>Сводный прайс-лист не формировался.</i>")
             
             report_text = "\n".join(lines)
-            await send_scout_telegram_report(report_text)
+            if chat_id and message_id:
+                await edit_telegram_message(chat_id, message_id, report_text)
+            else:
+                await send_scout_telegram_report(report_text)
     else:
         logger.warning("No files were successfully collected and uploaded.")
-        if not trigger_aggregation:
-            await send_scout_telegram_report("⚠️ <b>Не удалось скачать ни одного нового прайс-листа с каналов.</b>")
+        no_files_msg = "⚠️ <b>Не удалось скачать ни одного нового прайс-листа с каналов.</b>"
+        if chat_id and message_id:
+            await edit_telegram_message(chat_id, message_id, no_files_msg)
+        elif not trigger_aggregation:
+            await send_scout_telegram_report(no_files_msg)
         
     # Удаляем временные локальные файлы
     for path in downloaded_paths:
@@ -419,17 +499,30 @@ async def handle_http_request(reader, writer):
             await writer.drain()
             writer.close()
             return
+
+        chat_id = None
+        message_id = None
+        if "\r\n\r\n" in message:
+            body_str = message.split("\r\n\r\n", 1)[1]
+            if body_str:
+                try:
+                    import json
+                    body_json = json.loads(body_str)
+                    chat_id = body_json.get("chat_id")
+                    message_id = body_json.get("message_id")
+                except Exception:
+                    pass
             
         if method == "POST" and path == "/collect":
-            logger.info("Received HTTP /collect request. Starting full background collection flow...")
-            asyncio.create_task(run_collect_flow(trigger_aggregation=True))
+            logger.info(f"Received HTTP /collect request (chat_id={chat_id}, message_id={message_id}). Starting full collection flow...")
+            asyncio.create_task(run_collect_flow(trigger_aggregation=True, chat_id=chat_id, message_id=message_id))
             
             response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 22\r\n\r\n{\"status\":\"initiated\"}"
             writer.write(response.encode())
             await writer.drain()
         elif method == "POST" and path == "/fetch":
-            logger.info("Received HTTP /fetch request. Starting download-only collection flow...")
-            asyncio.create_task(run_collect_flow(trigger_aggregation=False))
+            logger.info(f"Received HTTP /fetch request (chat_id={chat_id}, message_id={message_id}). Starting download-only flow...")
+            asyncio.create_task(run_collect_flow(trigger_aggregation=False, chat_id=chat_id, message_id=message_id))
             
             response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 22\r\n\r\n{\"status\":\"initiated\"}"
             writer.write(response.encode())
@@ -455,7 +548,7 @@ async def trigger_demand_bot():
     if not config.DEMAND_BOT_USERNAME:
         logger.info("On-demand bot requests disabled (DEMAND_BOT_USERNAME not configured).")
         return
-        
+    
     logger.info(f"Triggering on-demand price request for bot: @{config.DEMAND_BOT_USERNAME}")
     try:
         await app.send_message(config.DEMAND_BOT_USERNAME, "/start")
@@ -489,10 +582,20 @@ async def trigger_demand_bot():
     except Exception as e:
         logger.exception(f"Failed to query on-demand bot: {e}")
 
-async def run_collect_flow(trigger_aggregation: bool = True):
-    """Запускает процедуру сбора: опрос бота-дистрибьютора + сбор всех прайсов."""
-    logger.info(f"Starting run_collect_flow (trigger_aggregation={trigger_aggregation})...")
+async def run_collect_flow(
+    trigger_aggregation: bool = True,
+    chat_id: Optional[int] = None,
+    message_id: Optional[int] = None
+):
+    """Запускает процедуру сбора: опрос бота-дистрибьютора + сбор всех прайсов с живым прогрессом."""
+    logger.info(f"Starting run_collect_flow (trigger_aggregation={trigger_aggregation}, chat_id={chat_id})...")
     if config.DEMAND_BOT_USERNAME:
+        if chat_id and message_id:
+            await edit_telegram_message(
+                chat_id,
+                message_id,
+                f"🤖 <b>Запрашиваю актуальный прайс у бота @{config.DEMAND_BOT_USERNAME}...</b>\n<i>Ожидаем ответ бота (~30 сек)...</i>"
+            )
         try:
             await trigger_demand_bot()
             # Даем боту время ответить и прислать файл
@@ -500,7 +603,11 @@ async def run_collect_flow(trigger_aggregation: bool = True):
             await asyncio.sleep(30)
         except Exception as e:
             logger.error(f"Error during triggering demand bot in flow: {e}")
-    await collect_latest_files(trigger_aggregation=trigger_aggregation)
+    await collect_latest_files(
+        trigger_aggregation=trigger_aggregation,
+        chat_id=chat_id,
+        message_id=message_id
+    )
 
 async def main():
     logger.info("Starting Scout Agent (userbot)...")

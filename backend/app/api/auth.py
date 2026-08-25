@@ -3,7 +3,7 @@ import jwt
 import redis
 from datetime import datetime, timedelta
 from typing import Any, Dict
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -23,8 +23,26 @@ def _get_redis():
         return None
 
 @router.get("/verify", response_model=Dict[str, Any])
-def verify_magic_token(token: str, db: Session = Depends(get_db)):
-    """Проверяет одноразовый JWT токен из Magic Link и выдает сессионный токен."""
+def verify_magic_token(request: Request, token: str, db: Session = Depends(get_db)):
+    """Проверяет одноразовый JWT токен из Magic Link и выдает сессионный токен с защитой от брутфорса."""
+    # Защита от брутфорса и сканирования (Rate Limiting: максимум 15 запросов в минуту на IP)
+    client_ip = request.client.host if request.client else "unknown"
+    r = _get_redis()
+    if r:
+        ip_limit_key = f"rate_limit:verify:{client_ip}"
+        try:
+            req_count = r.incr(ip_limit_key)
+            if req_count == 1:
+                r.expire(ip_limit_key, 60)
+            if req_count > 15:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Слишком много попыток авторизации. Пожалуйста, подождите минуту."
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning(f"Redis rate limit check error: {e}")
     try:
         payload = jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"])
         token_type = payload.get("type")

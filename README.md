@@ -1,28 +1,34 @@
-# Price Aggregator Web & Telegram Ecosystem 💊📊
+# Price Aggregator Web & Telegram MCP Ecosystem 💊📊
 
-**Price Aggregator Ecosystem** — это независимая многопользовательская веб-панель и интеллектуальная мульти-агентная экосистема из 4 специализированных Telegram-агентов для полной автоматизации сбора, сопоставления, аудита и аналитического исследования фармацевтических прайс-листов рынка Узбекистана.
+**Price Aggregator MCP Ecosystem** — это независимая многопользовательская веб-панель и интеллектуальная мульти-агентная экосистема из 4 специализированных Telegram-агентов на базе архитектуры **MCP (Model Context Protocol)** и **Google Gemini** для полной автоматизации сбора, сопоставления, аудита и аналитического исследования фармацевтических прайс-листов рынка Узбекистана.
 
-Система круглосуточно осуществляет мониторинг Telegram-каналов и ботов дистрибьюторов, загружает входящие прайс-листы, производит нечёткое сопоставление наименований препаратов (Union-Find + расстояние Левенштейна / RapidFuzz) по каноническому каталогу синонимов, строит визуально оформленные сводные матрицы цен в Excel, проводит автоматический аудит корректности данных с самоисправлением (Self-Healing AI) и предоставляет глубокую бизнес-аналитику (отчёты, интерактивные графики и презентации PowerPoint) на базе **Google Gemini**.
+Система круглосуточно осуществляет мониторинг Telegram-каналов и ботов дистрибьюторов, загружает входящие прайс-листы, производит нечёткое сопоставление наименований препаратов (Union-Find + расстояние Левенштейна / RapidFuzz) по каноническому каталогу синонимов, строит визуально оформленные сводные матрицы цен в Excel, проводит автоматический аудит корректности данных с самоисправлением (Self-Healing AI) и предоставляет глубокую бизнес-аналитику (отчёты, интерактивные графики и презентации PowerPoint) через стандартизированный слой **FastMCP** инструментов.
 
 ---
 
 ## 🌟 Ключевые возможности и архитектура агентов
 
-Экосистема включает в себя 4 четко разграниченных микросервисных компонента и веб-платформу:
+Экосистема включает в себя 4 четко разграниченных микросервисных компонента, изолированный слой FastMCP-серверов и веб-платформу:
 
 ```mermaid
 flowchart TD
     subgraph Telegram Infrastructure
         A[TG Channels & Bots Дистрибьюторов] -->|1. Скачивание .xlsx / .xls| B[🕵️‍♂️ Scout Agent (Userbot)]
         U[Пользователь / Фарм-команда] -->|2. Magic Link, ручная загрузка, /collect| C[🤖 Aggregator Bot (@lightprice_aggr_bot)]
-        U -->|3. Аналитика цен, продажи, графики, PPTX| D[🧠 Analyst Agent (Gemini 2.5 Flash)]
+        U -->|3. Аналитика цен, продажи, графики, PPTX| D[🧠 Analyst Agent (Gemini 2.5 Flash + MCP)]
         U -->|4. Аудит матриц, /debug, подтверждение правок| E[🛡️ Auditor & Debugger Bot (@lightyak_auditor_bot)]
+    end
+
+    subgraph MCP Tool Layer
+        M1[📊 Analytics MCP Server] <-->|Tool Calling| D
+        M2[🛠️ Debugger MCP Server] <-->|Tool Calling| E
     end
 
     subgraph Backend & Core Engine
         B -->|HTTP POST /api/files/upload| F[FastAPI REST API]
         C -->|Trigger /collect| B
-        D -->|HTTP GET /api/analysis| F
+        M1 -->|REST API Requests| F
+        M2 -->|Rules & Files Inspection| F
         F -->|Celery Task: сборка матрицы| G[(Redis + Celery)]
         G -->|Завершение сборки| F
         F -->|Webhook: запуск аудита| E
@@ -55,26 +61,29 @@ flowchart TD
 
 ---
 
-### 3. 🧠 Analyst Agent (ИИ-Аналитик рынка — Google Gemini 2.5 Flash)
-* **Автоматическая классификация NLP-запросов**: Распознавание интентов пользователей на естественном языке из группового чата.
-* **Общий анализ рынка и дефицита**: Сравнение двух последних сводных прайсов, выявление вымывания позиций (дефектура), роста или снижения средних и минимальных цен.
-* **Сравнение по произвольным датам**: Анализ динамики за любые указанные пользователем даты (`date1` и `date2`).
-* **Анализ по конкретному производителю**: Мгновенная выборка динамики цен брендов (например, *«анализ цен КРКА за 3 дня»*).
-* **Анализ по препарату**: Детальный срез рынка по конкретной товарной позиции (например, *«динамика по препарату Виферон 150»*).
-* **Парсер отчетов продаж (Sales Analytics)**: Прямой высокоскоростной XML-парсер Excel-файлов продаж (`sales_parser.py`), расчёт объемов реализации и остатков в разрезе препаратов, месяцев и дистрибьюторов по регионам (например, *«анализ продаж и остатков»*).
+### 3. 🧠 Analyst Agent (ИИ-Аналитик рынка — Google Gemini + FastMCP)
+* **Автоматический вызов инструментов (Gemini Function Calling & MCP)**: Gemini самостоятельно выбирает и вызывает необходимые инструменты MCP для получения точных фактов перед формированием ответа.
+* **Инструменты FastMCP (`mcp_servers/analytics_server.py`)**:
+  * `fetch_price_comparison`: сравнение двух сводных прайсов по датам и дефектура.
+  * `fetch_manufacturer_trends`: динамика цен брендов за произвольный период (например, *«анализ цен КРКА за 3 дня»*).
+  * `fetch_drug_price_history`: детальный срез рынка по конкретному препарату.
+  * `fetch_system_summary`: актуальная сводка базы данных, загруженных файлов и сводных отчетов.
+  * `fetch_sales_analysis`: анализ помесячной реализации и остатков (XML-парсер `sales_parser.py`).
 * **Визуализация (Dark Mode Charts)**: Автоматическая отрисовка графиков динамики цен и структуры продаж в формате PNG (`chart_generator.py`).
-* **Генерация презентаций PowerPoint (`.pptx`)**: Сборка полноценных 12-слайдовых презентаций с графиками, таблицами и отдельными слайдами по ключевым препаратам (*Анаферон детский/взрослый, Эргоферон, Ренгалин, Тенотен*).
-* **Управление памятью**: Команды очистки старых архивов (`/clean 05.2026`, `/clean 01.05.2026-30.06.2026`).
+* **Генерация презентаций PowerPoint (`.pptx`)**: Сборка полноценных 12-слайдовых презентаций с графиками, таблицами и отдельными слайдами по ключевым препаратам.
 
 ---
 
-### 4. 🛡️ Auditor & Debugger Agent (Агент-Аудитор — `@lightyak_auditor_bot`)
+### 4. 🛡️ Auditor & Debugger Agent (Агент-Аудитор — `@lightyak_auditor_bot` + FastMCP)
 * **Автономный аудит сводного прайса**: Срабатывает автоматически после каждой генерации сводной матрицы через внутренний вебхук (`POST /audit`).
-* **Контроль препаратов Материа Медика**: Полная сверка наличия позиций во всех исходных файлах дистрибьюторов и в результирующем сводном файле. Выявляет пропуски, сдвиги колонок и пустые строки.
+* **Инструменты FastMCP (`mcp_servers/debugger_server.py`)**:
+  * `get_distributor_rules`: получение актуальной базы правил парсинга.
+  * `save_distributor_rule`: обновление правил сопоставления колонок.
+  * `audit_excel_file`: инспекция структуры листов, заголовков и строк Excel-файлов дистрибьюторов.
+  * `trigger_pipeline_rerun`: запуск фонового пересчета сводного горизонтального отчета.
+  * `check_pipeline_task_status`: мониторинг прогресса выполнения задачи в бэкенде.
 * **Модуль самоисправления (Self-Healing Engine)**: При обнаружении аномалий ИИ-диагност (`healer.py`) анализирует структуру исходного файла дистрибьютора, находит правильные колонки цен (25% / 100%) и формирует интерактивное предложение по исправлению.
 * **Интерактивное утверждение правок**: Публикация карточки ошибки с кнопками *«✅ Применить и пересобрать»* и *«❌ Отклонить»*.
-* **Динамическая база правил**: При подтверждении исправления правило сохраняется в `distributor_rules.json`, автоматически перезапускается пайплайн сборки, проводится повторный аудит и отправляется готовый исправленный файл в Telegram.
-* **Команды управления**: `/audit`, `/debug`, `/status`.
 
 ---
 
@@ -90,17 +99,21 @@ flowchart TD
 ## 📂 Структура проекта
 
 ```text
-price-aggregator-web/
-├── docker-compose.yml           # Оркестрация 9 микросервисов в Docker
+price-aggregator-web-mcp/
+├── docker-compose.yml           # Оркестрация микросервисов в Docker
 ├── .env.example                 # Шаблон переменных окружения
-├── README.md                    # Основное руководство пользователя (Этот файл)
+├── README.md                    # Основное руководство пользователя
 ├── architecture_plan.md         # Архитектурный план экосистемы
+│
+├── mcp_servers/                 # Стандартизированные серверы Model Context Protocol (FastMCP)
+│   ├── __init__.py
+│   ├── analytics_server.py      # MCP Tools аналитики цен, препаратов и продаж
+│   └── debugger_server.py       # MCP Tools инспекции Excel-файлов, правил и задач
 │
 ├── backend/                     # Бэкенд на FastAPI и Бот-Агрегатор
 │   ├── Dockerfile
 │   ├── Шаблон.xlsx              # Базовый Excel-шаблон сводной матрицы
 │   ├── requirements.txt         # FastAPI, SQLAlchemy, Celery, openpyxl, rapidfuzz, aiogram
-│   ├── test_refactoring.py      # Интеграционные тесты ядра
 │   └── app/
 │       ├── main.py              # Точка входа FastAPI REST API
 │       ├── config.py            # Конфигурация бэкенда
@@ -108,47 +121,33 @@ price-aggregator-web/
 │       ├── models/              # Модели БД (User, Settings, CatalogItem, FileRecord, TaskRecord)
 │       ├── api/                 # REST API (auth, files, settings, catalog, tasks, analysis)
 │       ├── bot/                 # Бот-Агрегатор (@lightprice_aggr_bot)
-│       │   ├── handlers/        # Обработчики команд, Magic Link и загрузки файлов
-│       │   ├── keyboards.py     # Инлайн и реплай клавиатуры
-│       │   └── utils.py         # Генерация Magic Link и регистрация пользователей
-│       ├── core/                # Вычислительное ядро
-│       │   ├── grouping.py      # Алгоритм Union-Find и сопоставление синонимов
-│       │   ├── matrix_builder.py# Построение матриц цен Excel
-│       │   ├── sales_parser.py  # Высокоскоростной прямой XML-парсер отчетов продаж
-│       │   ├── report_formatter.py # Оформление и стилизация XLSX файлов
-│       │   └── svodny_price.py  # Фасад ядра
+│       ├── core/                # Вычислительное ядро (Union-Find, матрица, sales parser)
 │       └── tasks.py             # Задачи Celery и триггеры аудита
 │
 ├── scout_agent/                 # Telegram-парсер каналов дистрибьюторов (Pyrogram)
 │   ├── Dockerfile
 │   ├── main.py                  # Pyrogram Userbot, APScheduler и HTTP-сервер
-│   ├── api_client.py            # Отправка файлов на бэкенд
-│   └── config.py                # Конфигурация Scout Agent
+│   └── api_client.py            # Отправка файлов на бэкенд
 │
-├── analyst_agent/               # Аналитический Telegram-бот (aiogram v3 + Gemini AI)
+├── analyst_agent/               # Аналитический бот (aiogram v3 + Gemini AI + FastMCP)
 │   ├── Dockerfile
 │   ├── main.py                  # Маршрутизация запросов и отправка отчётов
-│   ├── gemini_service.py        # Обработка запросов через Google Gemini 2.5 Flash
+│   ├── gemini_service.py        # Обработка запросов через Google Gemini с Tool Calling
+│   ├── mcp_client.py            # Клиент и схемы MCP Tools для Gemini
 │   ├── chart_generator.py       # Построение графиков (Matplotlib Dark Theme PNG)
-│   ├── presentation_generator.py# Автоматическая сборка презентаций PowerPoint (.pptx)
-│   ├── backend_client.py        # Клиент взаимодействия с бэкендом
-│   └── config.py                # Конфигурация ИИ-аналитика
+│   └── presentation_generator.py# Автоматическая сборка презентаций PowerPoint (.pptx)
 │
-├── debugger_agent/              # Агент-Аудитор и Отладчик (@lightyak_auditor_bot)
+├── debugger_agent/              # Агент-Аудитор и Отладчик (@lightyak_auditor_bot + FastMCP)
 │   ├── Dockerfile
 │   ├── main.py                  # FastAPI вебхуки и Telegram Polling
 │   ├── auditor.py               # Движок аудита файлов сводного прайса
 │   ├── healer.py                # ИИ-диагностика и генерация правил исправления
-│   ├── api_client.py            # Сохранение правил и запуск пересборки
-│   └── config.py                # Конфигурация отладчика
+│   ├── mcp_client.py            # Клиент вызова MCP-инструментов аудитора
+│   └── api_client.py            # Сохранение правил и запуск пересборки
 │
 └── frontend/                    # SPA-интерфейс на React (Vite)
     ├── Dockerfile
-    ├── src/
-    │   ├── App.jsx              # Корневой компонент
-    │   ├── pages/               # Страницы (Dashboard, Catalog, Settings, Tasks, Auth)
-    │   ├── components/          # Компоненты (Header, TabBar, FileUploader)
-    │   └── utils/api.js         # API-клиент
+    ├── src/                     # React компоненты и страницы
     └── index.css                # Дизайн-система Neon Glassmorphism Dark Mode
 ```
 
@@ -156,16 +155,13 @@ price-aggregator-web/
 
 ## 🔒 Архитектура безопасности (Security Architecture)
 
-Экосистема спроектирована по принципам глубокой эшелонированной защиты:
-
 1. **Изоляция межсервисного взаимодействия (Internal API Key Mesh)**:
-   * Все внутренние запросы между агентами и бэкендом защищены общим секретным ключом `INTERNAL_API_KEY` (передаётся в заголовках `X-Internal-Key` / `X-Internal-API-Key`).
-   * Прямые неавторизованные вызовы эндпоинтов `/audit`, `/apply_fix`, `/reject_fix`, `/fetch` блокируются с кодом `403 Forbidden`.
+   * Все внутренние запросы между агентами, MCP-серверами и бэкендом защищены ключом `INTERNAL_API_KEY`.
 2. **Безопасная авторизация без паролей (Magic Links)**:
-   * Ссылки генерируются с криптографической подписью HMAC-SHA256 и имеют ограниченный срок действия (15 минут), что исключает перехват постоянных паролей.
+   * Ссылки генерируются с криптографической подписью HMAC-SHA256 и имеют ограниченный срок действия (15 минут).
 3. **Ролевое разграничение доступа в Telegram (RBAC)**:
-   * Боты проверяют `ALLOWED_TELEGRAM_IDS` и `TELEGRAM_GROUP_ID`. Попытки выполнения команд управления или нажатия инлайн-кнопок сторонними пользователями отклоняются.
-4. **Сетевая изоляция (Port Binding)**:
+   * Боты проверяют `ALLOWED_TELEGRAM_IDS` и `TELEGRAM_GROUP_ID`.
+4. **Сетевая изоляция**:
    * Внутренние микросервисы (база данных PostgreSQL, Redis, отладчик) доступны только внутри виртуальной сети Docker или привязаны к локальному интерфейсу `127.0.0.1`.
 
 ---
@@ -173,116 +169,29 @@ price-aggregator-web/
 ## 🛠 Технологический стек
 
 * **Бэкенд**: Python 3.10+, **FastAPI** (REST API), **SQLAlchemy 2.0**, **PostgreSQL 15**.
+* **Архитектура инструментов**: **FastMCP (Model Context Protocol)**.
 * **Очереди задач**: **Redis 7** + **Celery**.
 * **Фронтенд**: **React 18** (Vite), **Vanilla CSS** (Neon Glassmorphism Design System).
 * **Telegram-Инфраструктура**: **aiogram v3** (Aggregator, Analyst, Auditor Bots), **Pyrogram** (Scout Agent Userbot), **APScheduler**.
-* **Искусственный Интеллект**: **Google Gemini API** (Gemini 2.5 Flash).
+* **Искусственный Интеллект**: **Google Gemini API** (Gemini 2.5 Flash с поддержкой Tool Calling).
 * **Обработка данных**: **Pandas**, **OpenPyXL**, **RapidFuzz**, **Matplotlib**, **python-pptx**, **NetworkX / Union-Find**.
 * **Оркестрация**: **Docker**, **Docker Compose**.
 
 ---
 
-## 🚀 Быстрый запуск
-
-### 1. Настройка переменных окружения
-Скопируйте шаблон конфигурации и заполните переменные в `.env`:
-
-```bash
-cp .env.example .env
-```
-
-#### Справочник переменных `.env`:
-
-| Переменная | Описание | Пример |
-|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | Токен бота-агрегатора (@lightprice_aggr_bot) | `8994763619:AA...` |
-| `ANALYST_BOT_TOKEN` | Токен ИИ-аналитика (@lightprice_analyst_bot) | `8929029380:AA...` |
-| `DEBUGGER_BOT_TOKEN` | Токен бота-аудитора (@lightyak_auditor_bot) | `8707108214:AA...` |
-| `ALLOWED_TELEGRAM_IDS` | Разрешенные ID пользователей через запятую | `8734263270, 53064832` |
-| `TELEGRAM_GROUP_ID` | ID рабочей группы Telegram | `-1003971653752` |
-| `JWT_SECRET` | Секретный ключ для JWT-токенов | `openssl rand -hex 32` |
-| `INTERNAL_API_KEY` | Секретный ключ межсервисной аутентификации | `openssl rand -hex 32` |
-| `GEMINI_API_KEY` | Ключ Google AI Studio API | `AQ...` |
-| `GEMINI_MODEL` | Версия модели Gemini | `gemini-2.5-flash` |
-| `TELEGRAM_API_ID` | API ID для Pyrogram Userbot | `31971947` |
-| `TELEGRAM_API_HASH` | API Hash для Pyrogram Userbot | `ec57c063...` |
-| `TELEGRAM_PHONE` | Номер телефона аккаунта юзербота | `+998948889408` |
-| `DISTRIBUTOR_CHANNELS` | Список каналов дистрибьюторов через запятую | `-1003861704035, ...` |
-| `DEMAND_BOT_USERNAME` | Юзернейм бота для запроса прайсов | `vaksinabot` |
-| `DEMAND_BOT_TRIGGER_CRON`| Cron-расписание сбора прайсов | `0 9 * * 0,2,3,5,6` |
-
----
-
-### 2. Запуск через Docker Compose
+## 🚀 Запуск через Docker Compose
 
 ```bash
 docker compose up --build -d
 ```
 
-Все 9 сервисов запустятся автоматически в изолированных контейнерах:
-- `price_aggregator_db` (PostgreSQL)
-- `price_aggregator_redis` (Redis)
-- `price_aggregator_backend` (FastAPI, порт `8000`)
-- `price_aggregator_worker` (Celery)
-- `price_aggregator_bot` (Бот-Агрегатор)
-- `price_aggregator_scout` (Userbot Scout)
-- `price_aggregator_analyst` (ИИ-Аналитик)
-- `price_aggregator_debugger` (Аудитор & Отладчик, порт `127.0.0.1:8001`)
-- `price_aggregator_frontend` (React Web SPA, порт `5173`)
-
----
-
-## 💬 Команды Telegram-ботов
-
-### 1. 🤖 Бот-Агрегатор (`@lightprice_aggr_bot`)
-* `/start` — Получить персональную одноразовую ссылку (Magic Link) для входа на веб-панель.
-* `/collect` — Запустить немедленный сбор свежих прайсов с каналов через Scout Agent.
-* `/status` — Проверить статус работы фоновых сервисов и дату последнего сводного прайса.
-* **Отправка Excel-файла** — Загрузка прайса на сервер.
-
-### 2. 🧠 ИИ-Аналитик (`@lightprice_analyst_bot`)
-* *«Анализ рынка за неделю»* — полный сводный отчёт о динамике цен и дефектуре.
-* *«Анализ цен КРКА за 3 дня»* — срез рынка по выбранному производителю.
-* *«Динамика по препарату Виферон 150»* — детальный анализ наличия и цен препарата.
-* *«Анализ продаж и остатков»* — аналитика реализации из Excel-файлов продаж.
-* *«Нарисуй график продаж»* — построение визуального графика в Dark Mode (PNG).
-* *«Сделай презентацию»* — генерация 12-слайдовой презентации PowerPoint (`.pptx`).
-* *«Покажи состояние базы данных»* — сводка о загруженных прайсах и файлах продаж.
-* `/clean 05.2026` — интерактивная очистка архивов старых прайс-листов.
-
-### 3. 🛡️ Бот-Аудитор (`@lightyak_auditor_bot`)
-* `/audit` или `/debug` — принудительный запуск полного аудита свежего сводного прайса по препаратам Материа Медика.
-* `/status` — проверка статуса сервиса аудита и количества активных исправлений.
-* **Инлайн-кнопки** (*«✅ Применить и пересобрать»* / *«❌ Отклонить»*) — применение правил с автоматической пересборкой файла.
-
----
-
-## 📡 REST API Эндпоинты
-
-| Метод | Эндпоинт | Описание | Авторизация |
-|---|---|---|---|
-| `POST` | `/api/auth/login` | Вход пользователя (получение JWT) | Public |
-| `GET` | `/api/auth/magic-login` | Вход по одноразовому Magic-токену | Public |
-| `GET` | `/api/files/` | Список загруженных и сгенерированных файлов | JWT Bearer |
-| `POST` | `/api/files/upload` | Загрузка файла прайс-листа (.xlsx / .xls) | JWT / Internal Key |
-| `POST` | `/api/tasks` | Запуск фоновой задачи сборки матрицы (Celery)| JWT / Internal Key |
-| `GET` | `/api/catalog/` | Просмотр базы канонических названий и синонимов | JWT Bearer |
-| `POST` | `/api/catalog/add` | Добавление синонима в каталог | JWT Bearer |
-| `GET` | `/api/settings/` | Настройки колонок и пресетов дистрибьюторов | JWT Bearer |
-| `GET` | `/api/analysis/compare` | Сравнение двух сводных прайсов по датам | JWT / Internal Key |
-| `GET` | `/api/analysis/manufacturer`| Анализ изменения цен по производителю | JWT / Internal Key |
-| `GET` | `/api/analysis/drug` | Анализ изменения цен по конкретному препарату | JWT / Internal Key |
-| `GET` | `/api/analysis/sales-compare`| Агрегированный анализ реализации и остатков | JWT / Internal Key |
-| `GET` | `/api/analysis/system-summary`| Сводная информация о файлах и БД для ИИ | JWT / Internal Key |
-| `POST` | `http://debugger_agent:8001/audit`| Вебхук запуска аудита сводного прайса | Internal Key |
-| `POST` | `http://debugger_agent:8001/apply_fix`| Применение исправления и пересборка | Internal Key |
-
----
-
-## 🧪 Интеграционное тестирование
-
-Для запуска тестов ядра нормализации и сопоставления прайсов выполните:
-
-```bash
-docker exec price_aggregator_backend python /app/test_refactoring.py
-```
+Все сервисы запускаются автоматически в изолированных контейнерах:
+- `price_aggregator_mcp_db` (PostgreSQL)
+- `price_aggregator_mcp_redis` (Redis)
+- `price_aggregator_mcp_backend` (FastAPI, порт `8000`)
+- `price_aggregator_mcp_worker` (Celery)
+- `price_aggregator_mcp_bot` (Бот-Агрегатор)
+- `price_aggregator_mcp_scout` (Userbot Scout)
+- `price_aggregator_mcp_analyst` (ИИ-Аналитик с поддержкой FastMCP)
+- `price_aggregator_mcp_debugger` (Аудитор & Отладчик, порт `127.0.0.1:8001`)
+- `price_aggregator_mcp_frontend` (React Web SPA, порт `5173`)

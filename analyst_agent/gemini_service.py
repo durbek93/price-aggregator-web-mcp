@@ -395,3 +395,44 @@ async def generate_sales_report(analysis_data: dict, user_query: str = "") -> st
     return sanitize_telegram_html(raw_report)
 
 
+async def generate_mcp_agentic_response(user_query: str) -> str:
+    """
+    Интеллектуальный агентский обработчик на базе Gemini Function Calling и MCP Tools.
+    Gemini самостоятельно вызывает необходимые MCP-инструменты для получения актуальных данных.
+    """
+    try:
+        from mcp_client import ANALYST_MCP_TOOLS
+    except ImportError:
+        from analyst_agent.mcp_client import ANALYST_MCP_TOOLS
+
+    system_instruction = (
+        "Ты — ведущий ИИ-Аналитик фармацевтического рынка Узбекистана. "
+        "В твоём распоряжении есть набор инструментов MCP (Model Context Protocol) для получения данных о ценах, "
+        "сравнении прайсов, истории препаратов, динамике производителей и отчетах о продажах.\n"
+        "Когда пользователь задает вопрос, используй соответствующие инструменты (Tool Calling), чтобы получить "
+        "точные факты и цифры, а затем дай структурированный и понятный ответ.\n\n"
+        "Правила оформления ответа:\n"
+        "1. Используй ТОЛЬКО разрешенные теги Telegram HTML: <b>, <i>, <u>, <s>, <code>, <pre>, <a>.\n"
+        "2. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать <p>, <br>, <h1>-<h6>, <div>, <ul>, <ol>, <li>.\n"
+        "3. Категорически запрещено использовать Markdown (* или _).\n"
+        "4. Форматируй списки с эмодзи или дефисами, разделяй абзацы обычным переносом строки (\\n)."
+    )
+
+    logger.info(f"Calling Gemini with MCP tools for query: '{user_query[:60]}'...")
+    loop = asyncio.get_running_loop()
+
+    def _call_gemini_with_tools():
+        model = genai.GenerativeModel(
+            model_name=config.GEMINI_MODEL,
+            system_instruction=system_instruction,
+            tools=ANALYST_MCP_TOOLS
+        )
+        chat = model.start_chat(enable_automatic_function_calling=True)
+        response = chat.send_message(user_query)
+        return response.text
+
+    raw_report = await loop.run_in_executor(None, _call_gemini_with_tools)
+    return sanitize_telegram_html(raw_report)
+
+
+

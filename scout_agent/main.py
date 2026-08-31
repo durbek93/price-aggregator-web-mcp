@@ -3,6 +3,7 @@ import os
 import re
 import asyncio
 import logging
+from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from pathlib import Path
 
@@ -318,6 +319,17 @@ async def collect_latest_files(
                         logger.info(f"File '{filename}' ignored (matches other region '{text_to_check}' and doesn't contain Fergana/Tashkent).")
                         continue
                 
+                file_size = doc.file_size or 0
+                promo_pattern = re.compile(
+                    r"\b(?:акци|скидк|распродаж|уцен|promo\b|action\b|sale\b|приход|остатк|бонус|bonus\b|презентац|косметик|гигиен|аптеч|дефицит|ограничен)",
+                    re.IGNORECASE
+                )
+                
+                # 1. Отсеиваем мини-акции и рекламные листовки малого размера (< 300 КБ)
+                if file_size > 0 and file_size < 300000 and (promo_pattern.search(lower_filename) or promo_pattern.search(caption_text.lower())):
+                    logger.info(f"Skipping small promotional file (<300KB) in {cleaned_name}: {filename} ({file_size} bytes)")
+                    continue
+
                 score = 100.0
                 
                 # Бонус за регионы
@@ -330,12 +342,12 @@ async def collect_latest_files(
                 elif not is_biotek:
                     score -= 70.0
 
-                promo_pattern = re.compile(
-                    r"\b(?:акци|скидк|распродаж|уцен|promo\b|action\b|sale\b|приход|остатк|бонус|bonus\b|презентац|косметик|гигиен|аптеч|дефицит|ограничен|спец)",
-                    re.IGNORECASE
-                )
+                # Для небольших файлов штрафуем промо-слова, для полноценных каталогов (>500 КБ) слово в названии не отбрасывает файл
                 if promo_pattern.search(lower_filename) or promo_pattern.search(caption_text.lower()):
-                    score -= 60.0
+                    if file_size < 500000:
+                        score -= 50.0
+                    else:
+                        score -= 5.0
                         
                 postpay_keywords = ["25%", "25 %", "25процент", "25 отсроч", "25 отср", "отсроч", "отср"]
                 for kw in postpay_keywords:
@@ -354,8 +366,23 @@ async def collect_latest_files(
                     if kw in lower_filename:
                         score += 20.0
                         break
+                
+                # 2. Извлечение даты из имени файла (например, 25.08.2026, 25,08,2026, 25_08_2026, 25.08)
+                date_match = re.search(r"(\d{1,2})[.,_](\d{1,2})(?:[.,_](\d{2,4}))?", filename)
+                now = datetime.now()
+                if date_match:
+                    try:
+                        d = int(date_match.group(1))
+                        m = int(date_match.group(2))
+                        if d == now.day and m == now.month:
+                            score += 500.0  # Приоритет файла с сегодняшней датой
+                        elif m == now.month and d == (now.day - 1):
+                            score += 200.0  # Приоритет вчерашней даты
+                    except Exception:
+                        pass
                         
-                score += (message.date.timestamp() / 86400.0)
+                # 3. Решающий вес фактора свежести времени сообщения (1 день = 100 баллов)
+                score += (message.date.timestamp() / 864.0)
                 region_tag = "tashkent"
                 if is_meros and has_samarkand and not has_tashkent:
                     region_tag = "samarkand"

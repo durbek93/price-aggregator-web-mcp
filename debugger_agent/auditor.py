@@ -9,53 +9,6 @@ import pandas as pd
 
 logger = logging.getLogger("debugger_agent.auditor")
 
-MATERIA_SYNONYMS = {
-    "эргоферон": ["эргоферон", "ergoferon"],
-    "анаферон детский": ["анаферон дет", "анаферон для дет", "anaferon child"],
-    "анаферон детский капли": ["анаферон дет кап", "анаферон капл", "анаферон 25мл"],
-    "анаферон": ["анаферон таб", "анаферон взр", "anaferon"],
-    "ренгалин таб": ["ренгалин таб", "ренгалин табл", "rengalin tab"],
-    "ренгалин раствор": ["ренгалин р-р", "ренгалин раст", "ренгалин 100", "rengalin sol"],
-    "тенотен": ["тенотен таб", "тенотен взр", "tenoten"],
-    "тенотен детский": ["тенотен дет", "tenoten child"],
-    "диваза": ["диваза", "divaza"],
-    "колофорт": ["колофорт", "kolofort", "colofort"],
-    "афалаза": ["афалаза", "afalaza"],
-    "афала": ["афала таб", "афала №100", "afala"],
-    "импаза": ["импаза", "impaza"],
-    "климаксан гр": ["климаксан гр", "климаксан гранул"],
-    "климаксан таб": ["климаксан таб", "klimaksan"],
-    "млекоин": ["млекоин", "mlekoin"],
-    "успокой": ["успокой", "uspokoy"],
-    "фарингомед": ["фарингомед", "faringomed"],
-    "бризантин": ["бризантин", "brizantin"],
-    "проспекта": ["проспекта", "prospekta"],
-    "кардос": ["кардос", "kardos"],
-}
-
-MATERIA_KEY_TO_TEMPLATE_PRODUCT = {
-    "эргоферон": "Эргоферон №20",
-    "анаферон детский": "Анаферон детский №20",
-    "анаферон детский капли": "Анаферон детский №20 капли",
-    "анаферон": "Анаферон №20",
-    "ренгалин таб": "Ренгалин таб №20",
-    "ренгалин раствор": "Ренгалин раствор 100 мл",
-    "тенотен": "Тенотен №20",
-    "тенотен детский": "Тенотен детский №20",
-    "тенотен 40": "Тенотен №40",
-    "тенотен детский 40": "Тенотен детский №40",
-    "диваза": "Диваза №100",
-    "колофорт": "Колофорт №100",
-    "афалаза": "Афалаза таб № 100",
-    "афала": "Афала №100",
-    "импаза": "Импаза №20",
-    "климаксан гр": "Климаксан гр  10 гр",
-    "климаксан таб": "Климаксан таб №20",
-    "млекоин": "Млекоин гр 10 гр",
-    "успокой": "Успокой №20",
-    "фарингомед": "Фарингомед №20",
-}
-
 DISTRIBUTOR_MAP = {
     "zenta": {"label": "ЗЕНТА ФАРМ", "col_25": 3, "col_100": 4, "patterns": ["zenta", "зента"]},
     "grand": {"label": "ГРАНД ФАРМ", "col_25": 5, "col_100": 6, "patterns": ["grand", "гранд"]},
@@ -75,7 +28,7 @@ class Discrepancy:
     distributor_label: str
     raw_filename: str
     raw_filepath: Path
-    issue_type: str  # 'missing_100_percent', 'missing_25_percent', 'product_missing', 'price_mismatch'
+    issue_type: str  # 'missing_100_percent', 'distributor_completely_missing', 'product_missing', 'price_mismatch'
     description: str
     affected_products: List[str] = field(default_factory=list)
     raw_sample_data: Dict[str, Any] = field(default_factory=dict)
@@ -95,7 +48,6 @@ def _read_excel_file(path: Path) -> pd.DataFrame:
     suffix = path.suffix.lower()
     engine = "openpyxl" if suffix == ".xlsx" else "xlrd"
     try:
-        # First read without header to inspect rows
         df_raw = pd.read_excel(path, sheet_name=0, header=None, engine=engine)
         
         # Find header row
@@ -107,7 +59,6 @@ def _read_excel_file(path: Path) -> pd.DataFrame:
                 break
                 
         df = pd.read_excel(path, sheet_name=0, header=hdr_idx, engine=engine)
-        # Deduplicate column names
         seen = {}
         new_cols = []
         for c in df.columns:
@@ -130,7 +81,6 @@ def _read_excel_file(path: Path) -> pd.DataFrame:
 def find_latest_svodny(output_dir: Path) -> Optional[Path]:
     """Finds the most recently modified consolidated price file."""
     candidates = []
-    # Search in output_dir and all subdirectories (like output_dir/1)
     for p in output_dir.glob("**/Сводный*.xlsx"):
         if p.is_file() and not p.name.startswith("~$"):
             candidates.append(p)
@@ -138,6 +88,154 @@ def find_latest_svodny(output_dir: Path) -> Optional[Path]:
         return None
     candidates.sort(key=lambda x: x.stat().st_mtime, reverse=True)
     return candidates[0]
+
+
+def match_raw_to_template_product(raw_name: str, template_products: List[Tuple[int, str]]) -> Optional[Tuple[int, str]]:
+    """
+    Matches raw supplier product name to the exact template product in the consolidated sheet.
+    Follows canonical pharmaceutical form matching rules.
+    """
+    raw_norm = " ".join(str(raw_name).lower().split())
+
+    def contains_any(word: str, substrings: List[str]) -> bool:
+        return any(x in word for x in substrings)
+
+    # 1. Ergoferon
+    if contains_any(raw_norm, ["эргоферон", "ergoferon"]):
+        for r_idx, t_name in template_products:
+            t_low = t_name.lower()
+            if "эргоферон" in t_low or "ergoferon" in t_low:
+                return (r_idx, t_name)
+
+    # 2. Anaferon
+    if contains_any(raw_norm, ["анаферон", "anaferon"]):
+        is_drops = contains_any(raw_norm, ["капл", "кап", "25мл", "25 мл"])
+        is_child = contains_any(raw_norm, ["детс", "дет", "child"])
+        if is_drops:
+            for r_idx, t_name in template_products:
+                t_low = t_name.lower()
+                if "анаферон" in t_low and ("капл" in t_low or "кап" in t_low):
+                    return (r_idx, t_name)
+        elif is_child:
+            for r_idx, t_name in template_products:
+                t_low = t_name.lower()
+                if "анаферон" in t_low and "дет" in t_low and "кап" not in t_low:
+                    return (r_idx, t_name)
+        else:
+            for r_idx, t_name in template_products:
+                t_low = t_name.lower()
+                if "анаферон" in t_low and "дет" not in t_low and "кап" not in t_low:
+                    return (r_idx, t_name)
+
+    # 3. Tenoten
+    if contains_any(raw_norm, ["тенотен", "tenoten"]):
+        is_child = contains_any(raw_norm, ["детс", "дет", "child"])
+        if is_child:
+            for r_idx, t_name in template_products:
+                t_low = t_name.lower()
+                if "тенотен" in t_low and "дет" in t_low:
+                    return (r_idx, t_name)
+        else:
+            for r_idx, t_name in template_products:
+                t_low = t_name.lower()
+                if "тенотен" in t_low and "дет" not in t_low:
+                    return (r_idx, t_name)
+
+    # 4. Rengalin
+    if contains_any(raw_norm, ["ренгалин", "rengalin"]):
+        is_sol = contains_any(raw_norm, ["раствор", "р-р", "раст", "100мл", "100 мл", "сироп", "sol"])
+        if is_sol:
+            for r_idx, t_name in template_products:
+                t_low = t_name.lower()
+                if "ренгалин" in t_low and ("раствор" in t_low or "р-р" in t_low or "100" in t_low or "мл" in t_low):
+                    return (r_idx, t_name)
+        else:
+            for r_idx, t_name in template_products:
+                t_low = t_name.lower()
+                if "ренгалин" in t_low and not ("раствор" in t_low or "р-р" in t_low or "100" in t_low or "мл" in t_low):
+                    return (r_idx, t_name)
+
+    # 5. Klimaksan
+    if contains_any(raw_norm, ["климаксан", "klimaksan"]):
+        is_gran = contains_any(raw_norm, ["гран", "гранул", "10г", "10 г"])
+        if is_gran:
+            for r_idx, t_name in template_products:
+                t_low = t_name.lower()
+                if "климаксан" in t_low and ("гран" in t_low or "10" in t_low):
+                    return (r_idx, t_name)
+        else:
+            for r_idx, t_name in template_products:
+                t_low = t_name.lower()
+                if "климаксан" in t_low and not ("гран" in t_low or "10" in t_low):
+                    return (r_idx, t_name)
+
+    # 6. Divaza
+    if contains_any(raw_norm, ["диваза", "divaza"]):
+        for r_idx, t_name in template_products:
+            if "диваза" in t_name.lower() or "divaza" in t_name.lower():
+                return (r_idx, t_name)
+
+    # 7. Kolofort
+    if contains_any(raw_norm, ["колофорт", "kolofort", "colofort"]):
+        for r_idx, t_name in template_products:
+            if "колофорт" in t_name.lower() or "kolofort" in t_name.lower():
+                return (r_idx, t_name)
+
+    # 8. Afalaza
+    if contains_any(raw_norm, ["афалаза", "afalaza"]):
+        for r_idx, t_name in template_products:
+            if "афалаза" in t_name.lower() or "afalaza" in t_name.lower():
+                return (r_idx, t_name)
+
+    # 9. Afala
+    if contains_any(raw_norm, ["афала", "afala"]) and not contains_any(raw_norm, ["афалаза", "afalaza"]):
+        for r_idx, t_name in template_products:
+            if "афала" in t_name.lower() and "афалаза" not in t_name.lower():
+                return (r_idx, t_name)
+
+    # 10. Impaza
+    if contains_any(raw_norm, ["импаза", "impaza"]):
+        for r_idx, t_name in template_products:
+            if "импаза" in t_name.lower() or "impaza" in t_name.lower():
+                return (r_idx, t_name)
+
+    # 11. Mlekoin
+    if contains_any(raw_norm, ["млекоин", "mlekoin"]):
+        for r_idx, t_name in template_products:
+            if "млекоин" in t_name.lower() or "mlekoin" in t_name.lower():
+                return (r_idx, t_name)
+
+    # 12. Uspokoy
+    if contains_any(raw_norm, ["успокой", "uspokoy"]):
+        for r_idx, t_name in template_products:
+            if "успокой" in t_name.lower() or "uspokoy" in t_name.lower():
+                return (r_idx, t_name)
+
+    # 13. Faringomed
+    if contains_any(raw_norm, ["фарингомед", "faringomed"]):
+        for r_idx, t_name in template_products:
+            if "фарингомед" in t_name.lower() or "faringomed" in t_name.lower():
+                return (r_idx, t_name)
+
+    # 14. Brizantin
+    if contains_any(raw_norm, ["бризантин", "brizantin"]):
+        for r_idx, t_name in template_products:
+            if "бризантин" in t_name.lower() or "brizantin" in t_name.lower():
+                return (r_idx, t_name)
+
+    # 15. Prospekta
+    if contains_any(raw_norm, ["проспекта", "prospekta"]):
+        for r_idx, t_name in template_products:
+            if "проспекта" in t_name.lower() or "prospekta" in t_name.lower():
+                return (r_idx, t_name)
+
+    # 16. Kardos
+    if contains_any(raw_norm, ["кардос", "kardos"]):
+        for r_idx, t_name in template_products:
+            if "кардос" in t_name.lower() or "kardos" in t_name.lower():
+                return (r_idx, t_name)
+
+    return None
 
 
 def audit_svodny_price(svodny_path: Path, upload_dir: Path) -> AuditReport:
@@ -166,8 +264,13 @@ def audit_svodny_price(svodny_path: Path, upload_dir: Path) -> AuditReport:
     discrepancies: List[Discrepancy] = []
     checked_distributors: List[str] = []
 
-    # Get list of all raw files in upload_dir
-    raw_files = [p for p in upload_dir.glob("**/*.*") if p.suffix.lower() in [".xlsx", ".xls"] and not p.name.startswith("~$") and "history" not in str(p)]
+    # Get list of all raw files in upload_dir (excluding temp, history, and system files)
+    raw_files = [
+        p for p in upload_dir.glob("**/*.*")
+        if p.suffix.lower() in [".xlsx", ".xls"]
+        and not p.name.startswith("~$")
+        and "history" not in p.parts
+    ]
 
     for dist_key, dist_info in DISTRIBUTOR_MAP.items():
         dist_label = dist_info["label"]
@@ -213,18 +316,6 @@ def audit_svodny_price(svodny_path: Path, upload_dir: Path) -> AuditReport:
             if not name_col:
                 continue
 
-            # Find Materia Medica rows in the raw file
-            materia_rows = []
-            for r_i in range(len(df_raw)):
-                n_val = str(df_raw.iloc[r_i].get(name_col, "")).lower()
-                for key_term in MATERIA_SYNONYMS:
-                    if key_term in n_val:
-                        materia_rows.append((df_raw.iloc[r_i], key_term))
-                        break
-
-            if not materia_rows:
-                continue
-
             # Check available numeric price columns in raw file
             numeric_cols = []
             for c in df_raw.columns:
@@ -240,31 +331,61 @@ def audit_svodny_price(svodny_path: Path, upload_dir: Path) -> AuditReport:
                             valid_cnt += 1
                     except (ValueError, TypeError):
                         pass
-                if valid_cnt >= 5:
+                if valid_cnt >= 3:
                     numeric_cols.append(c)
 
-            # Check 1: Missing 100% price column
+            # Find Materia Medica rows in the raw file using canonical matching
+            materia_rows = []
+            for r_i in range(len(df_raw)):
+                raw_row = df_raw.iloc[r_i]
+                n_val = str(raw_row.get(name_col, "")).strip()
+                if not n_val or n_val.lower() == "nan":
+                    continue
+                
+                matched_tpl = match_raw_to_template_product(n_val, template_products)
+                if matched_tpl:
+                    # Verify this row has a positive numeric price
+                    has_price = False
+                    for c in numeric_cols:
+                        v = raw_row.get(c)
+                        try:
+                            if pd.notna(v) and float(v) > 500:
+                                has_price = True
+                                break
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    if has_price:
+                        materia_rows.append((raw_row, matched_tpl[0], matched_tpl[1], n_val))
+
+            if not materia_rows:
+                continue
+
+            is_100_file = "100" in raw_path.name.lower()
+            is_25_file = "25" in raw_path.name.lower()
+
+            # Check 1: Missing 100% price column entirely
             if col_100 is not None:
                 all_100_none = all(sheet_prices_100.get(p) is None for _, p in template_products)
-                has_discount_columns = len(numeric_cols) > 1 or any(x in raw_path.name.lower() for x in ["100", "скид"])
+                has_discount_columns = len(numeric_cols) > 1 or is_100_file
                 
-                # If raw file has discount columns but 100% in sheet is completely empty
                 if all_100_none and has_discount_columns:
                     affected = [p for _, p in template_products if sheet_prices_25.get(p) is not None]
-                    discrepancies.append(Discrepancy(
-                        distributor_key=dist_key,
-                        distributor_label=dist_label,
-                        raw_filename=raw_path.name,
-                        raw_filepath=raw_path,
-                        issue_type="missing_100_percent",
-                        description=f"Дистрибьютор {dist_label}: колонка цены 100% (колонка {col_100}) полностью пуста, хотя в файле {raw_path.name} обнаружено несколько колонок цен {numeric_cols}.",
-                        affected_products=affected,
-                        raw_sample_data={
-                            "columns": list(df_raw.columns),
-                            "numeric_price_cols": numeric_cols,
-                            "sample_row": materia_rows[0][0].to_dict() if materia_rows else {}
-                        }
-                    ))
+                    if affected:
+                        discrepancies.append(Discrepancy(
+                            distributor_key=dist_key,
+                            distributor_label=dist_label,
+                            raw_filename=raw_path.name,
+                            raw_filepath=raw_path,
+                            issue_type="missing_100_percent",
+                            description=f"Дистрибьютор {dist_label}: колонка цены 100% (колонка {col_100}) полностью пуста, хотя в файле {raw_path.name} обнаружены колонки цен {numeric_cols}.",
+                            affected_products=affected,
+                            raw_sample_data={
+                                "columns": list(df_raw.columns),
+                                "numeric_price_cols": numeric_cols,
+                                "sample_row": materia_rows[0][0].to_dict() if materia_rows else {}
+                            }
+                        ))
 
             # Check 2: Entirely missing distributor
             all_25_none = all(sheet_prices_25.get(p) is None for _, p in template_products)
@@ -288,30 +409,12 @@ def audit_svodny_price(svodny_path: Path, upload_dir: Path) -> AuditReport:
             # Check 3: Missing specific Materia Medica products found in raw file
             elif not (all_25_none and all_100_none):
                 seen_missing_target = set()
-                for m_row, key_term in materia_rows:
-                    target_prod = MATERIA_KEY_TO_TEMPLATE_PRODUCT.get(key_term)
-                    if not target_prod or target_prod in seen_missing_target:
-                        continue
-                    
-                    # Check if price exists in this raw row
-                    has_price = False
-                    for c in numeric_cols:
-                        v = m_row.get(c)
-                        try:
-                            if pd.notna(v) and float(v) > 500:
-                                has_price = True
-                                break
-                        except (ValueError, TypeError):
-                            pass
-                    if not has_price:
+                for m_row, t_row_idx, target_prod, raw_product_name in materia_rows:
+                    if target_prod in seen_missing_target:
                         continue
 
-                    raw_product_name = str(m_row.get(name_col, "")).strip()
                     val_25 = sheet_prices_25.get(target_prod)
                     val_100 = sheet_prices_100.get(target_prod) if col_100 else None
-
-                    is_100_file = "100" in raw_path.name.lower()
-                    is_25_file = "25" in raw_path.name.lower()
 
                     if is_100_file:
                         if col_100 and val_100 is None:

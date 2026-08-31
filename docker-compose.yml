@@ -3,7 +3,7 @@ version: '3.8'
 services:
   db:
     image: postgres:15-alpine
-    container_name: price_aggregator_db
+    container_name: price_aggregator_mcp_db
     restart: always
     environment:
       POSTGRES_USER: postgres
@@ -12,23 +12,23 @@ services:
     expose:
       - "5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata_mcp:/var/lib/postgresql/data
 
   pgadmin:
     image: dpage/pgadmin4
-    container_name: price_aggregator_pgadmin
+    container_name: price_aggregator_mcp_pgadmin
     restart: always
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@admin.com
       PGADMIN_DEFAULT_PASSWORD: admin_secure_password_123
     ports:
-      - "127.0.0.1:5050:80"
+      - "127.0.0.1:5052:80"
     depends_on:
       - db
 
   redis:
     image: redis:7-alpine
-    container_name: price_aggregator_redis
+    container_name: price_aggregator_mcp_redis
     restart: always
     expose:
       - "6379"
@@ -37,11 +37,11 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: price_aggregator_backend
+    container_name: price_aggregator_mcp_backend
     restart: always
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
-      - "8000:8000"
+      - "8010:8000"
     environment:
       - DATABASE_URL=postgresql://postgres:postgres_secure_password@db:5432/price_aggregator
       - REDIS_URL=redis://redis:6379/0
@@ -64,7 +64,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: price_aggregator_worker
+    container_name: price_aggregator_mcp_worker
     restart: always
     command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=2 --max-tasks-per-child=50
     environment:
@@ -89,7 +89,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: price_aggregator_bot
+    container_name: price_aggregator_mcp_bot
     restart: always
     command: python -m app.bot.main
     environment:
@@ -111,16 +111,16 @@ services:
 
   frontend:
     image: node:20-alpine
-    container_name: price_aggregator_frontend
+    container_name: price_aggregator_mcp_frontend
     restart: always
     working_dir: /app
     volumes:
       - ./frontend:/app
     ports:
-      - "5173:5173"
+      - "5175:5173"
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
     environment:
-      - VITE_API_URL=http://localhost:8000
+      - VITE_API_URL=http://localhost:8010
     depends_on:
       - backend
 
@@ -128,7 +128,7 @@ services:
     build:
       context: ./scout_agent
       dockerfile: Dockerfile
-    container_name: price_aggregator_scout
+    container_name: price_aggregator_mcp_scout
     restart: always
     volumes:
       - ./scout_agent:/app
@@ -150,7 +150,7 @@ services:
     build:
       context: ./analyst_agent
       dockerfile: Dockerfile
-    container_name: price_aggregator_analyst
+    container_name: price_aggregator_mcp_analyst
     restart: always
     environment:
       - ANALYST_BOT_TOKEN=${ANALYST_BOT_TOKEN}
@@ -159,8 +159,10 @@ services:
       - INTERNAL_API_KEY=${INTERNAL_API_KEY}
       - BACKEND_URL=http://backend:8000
       - TELEGRAM_GROUP_ID=${TELEGRAM_GROUP_ID}
+      - PYTHONPATH=/app
     volumes:
       - ./analyst_agent:/app
+      - ./mcp_servers:/app/mcp_servers
     depends_on:
       - backend
 
@@ -168,7 +170,7 @@ services:
     build:
       context: ./debugger_agent
       dockerfile: Dockerfile
-    container_name: price_aggregator_debugger
+    container_name: price_aggregator_mcp_debugger
     restart: always
     environment:
       - DEBUGGER_BOT_TOKEN=${DEBUGGER_BOT_TOKEN}
@@ -181,13 +183,15 @@ services:
       - UPLOAD_DIR=/app/data/uploads
       - OUTPUT_DIR=/app/data/outputs
       - RULES_FILE=/app/data/distributor_rules.json
+      - PYTHONPATH=/app
     volumes:
       - ./debugger_agent:/app
+      - ./mcp_servers:/app/mcp_servers
       - ./backend/data:/app/data
     ports:
-      - "127.0.0.1:8001:8001"
+      - "127.0.0.1:8011:8001"
     depends_on:
       - backend
 
 volumes:
-  pgdata:
+  pgdata_mcp:

@@ -12,7 +12,7 @@ services:
     expose:
       - "5432"
     volumes:
-      - pgdata_mcp:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
 
   pgadmin:
     image: dpage/pgadmin4
@@ -22,7 +22,7 @@ services:
       PGADMIN_DEFAULT_EMAIL: admin@admin.com
       PGADMIN_DEFAULT_PASSWORD: admin_secure_password_123
     ports:
-      - "127.0.0.1:5052:80"
+      - "127.0.0.1:5050:80"
     depends_on:
       - db
 
@@ -41,7 +41,7 @@ services:
     restart: always
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
-      - "8010:8000"
+      - "8000:8000"
     environment:
       - DATABASE_URL=postgresql://postgres:postgres_secure_password@db:5432/price_aggregator
       - REDIS_URL=redis://redis:6379/0
@@ -117,10 +117,10 @@ services:
     volumes:
       - ./frontend:/app
     ports:
-      - "5175:5173"
+      - "5173:5173"
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
     environment:
-      - VITE_API_URL=http://localhost:8010
+      - VITE_API_URL=http://localhost:8000
     depends_on:
       - backend
 
@@ -189,9 +189,12 @@ services:
       - ./mcp_servers:/app/mcp_servers
       - ./backend/data:/app/data
     ports:
-      - "127.0.0.1:8011:8001"
+      - "127.0.0.1:8001:8001"
     depends_on:
       - backend
 
 volumes:
-  pgdata_mcp:
+  pgdata:
+    name: price-aggregator-web_pgdata
+    external: true
+

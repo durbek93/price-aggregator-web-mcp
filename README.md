@@ -12,33 +12,33 @@
 
 ```mermaid
 flowchart TD
-    subgraph Telegram Infrastructure
-        A[TG Channels & Bots Дистрибьюторов] -->|1. Скачивание .xlsx / .xls| B[🕵️‍♂️ Scout Agent (Userbot)]
-        U[Пользователь / Фарм-команда] -->|2. Magic Link, ручная загрузка, /collect| C[🤖 Aggregator Bot (@lightprice_aggr_bot)]
-        U -->|3. Аналитика цен, продажи, графики, PPTX| D[🧠 Analyst Agent (Gemini 2.5 Flash + MCP)]
-        U -->|4. Аудит матриц, /debug, подтверждение правок| E[🛡️ Auditor & Debugger Bot (@lightyak_auditor_bot)]
+    subgraph TG_Infra ["Telegram Infrastructure"]
+        A["TG Channels & Bots Дистрибьюторов"] -->|"1. Скачивание .xlsx / .xls"| B["Scout Agent (Userbot)"]
+        U["Пользователь / Фарм-команда"] -->|"2. Magic Link, ручная загрузка, /collect"| C["Aggregator Bot (@lightprice_aggr_bot)"]
+        U -->|"3. Аналитика цен, продажи, графики, PPTX"| D["Analyst Agent (Gemini 2.5 Flash + MCP)"]
+        U -->|"4. Аудит матриц, /debug, подтверждение правок"| E["Auditor & Debugger Bot (@lightyak_auditor_bot)"]
     end
 
-    subgraph MCP Tool Layer
-        M1[📊 Analytics MCP Server] <-->|Tool Calling| D
-        M2[🛠️ Debugger MCP Server] <-->|Tool Calling| E
+    subgraph MCP_Layer ["MCP Tool Layer"]
+        M1["Analytics MCP Server"] <-->|"Tool Calling"| D
+        M2["Debugger MCP Server"] <-->|"Tool Calling"| E
     end
 
-    subgraph Backend & Core Engine
-        B -->|HTTP POST /api/files/upload| F[FastAPI REST API]
-        C -->|Trigger /collect| B
-        M1 -->|REST API Requests| F
-        M2 -->|Rules & Files Inspection| F
-        F -->|Celery Task: сборка матрицы| G[(Redis + Celery)]
-        G -->|Завершение сборки| F
-        F -->|Webhook: запуск аудита| E
-        E -->|Диагностика расхождений и самоисправление| H[Distributor Rules JSON]
-        F <--> I[(PostgreSQL)]
-        D -->|Генерация отчетов| J[Google Gemini API]
+    subgraph Backend_Core ["Backend & Core Engine"]
+        B -->|"HTTP POST /api/files/upload"| F["FastAPI REST API"]
+        C -->|"Trigger /collect"| B
+        M1 -->|"REST API Requests"| F
+        M2 -->|"Rules & Files Inspection"| F
+        F -->|"Celery Task: сборка матрицы"| G[("Redis + Celery")]
+        G -->|"Завершение сборки"| F
+        F -->|"Webhook: запуск аудита"| E
+        E -->|"Диагностика расхождений и самоисправление"| H["Distributor Rules JSON"]
+        F <--> I[("PostgreSQL")]
+        D -->|"Генерация отчетов"| J["Google Gemini API"]
     end
 
-    subgraph Web Frontend
-        W[React Vite SPA Dashboard] <-->|REST API + JWT| F
+    subgraph Web_Frontend ["Web Frontend"]
+        W["React Vite SPA Dashboard"] <-->|"REST API + JWT"| F
     end
 ```
 

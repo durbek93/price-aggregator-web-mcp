@@ -364,7 +364,7 @@ def audit_svodny_price(svodny_path: Path, upload_dir: Path) -> AuditReport:
             is_100_file = "100" in raw_path.name.lower()
             is_25_file = "25" in raw_path.name.lower()
 
-            # Check 1: Missing 100% price column entirely
+            # Check 1a: Missing 100% price column entirely
             if col_100 is not None:
                 all_100_none = all(sheet_prices_100.get(p) is None for _, p in template_products)
                 has_discount_columns = len(numeric_cols) > 1 or is_100_file
@@ -386,6 +386,54 @@ def audit_svodny_price(svodny_path: Path, upload_dir: Path) -> AuditReport:
                                 "sample_row": materia_rows[0][0].to_dict() if materia_rows else {}
                             }
                         ))
+
+            # Check 1b: Missing 25% price column entirely when 25% file exists
+            if col_25 is not None:
+                all_25_none_check = all(sheet_prices_25.get(p) is None for _, p in template_products)
+                if all_25_none_check and (is_25_file or len(numeric_cols) >= 1):
+                    affected = [p for _, p in template_products if col_100 and sheet_prices_100.get(p) is not None]
+                    if affected or is_25_file:
+                        discrepancies.append(Discrepancy(
+                            distributor_key=dist_key,
+                            distributor_label=dist_label,
+                            raw_filename=raw_path.name,
+                            raw_filepath=raw_path,
+                            issue_type="missing_25_percent",
+                            description=f"Дистрибьютор {dist_label}: колонка цены 25% (колонка {col_25}) полностью пуста, хотя загружен файл {raw_path.name}.",
+                            affected_products=affected or [p for _, p in template_products],
+                            raw_sample_data={
+                                "columns": list(df_raw.columns),
+                                "numeric_price_cols": numeric_cols,
+                                "sample_row": materia_rows[0][0].to_dict() if materia_rows else {}
+                            }
+                        ))
+
+            # Check 1c: Identical prices anomaly (when 25% and 100% columns have exact duplicates for all products)
+            if col_25 is not None and col_100 is not None:
+                matching_pairs = 0
+                identical_pairs = 0
+                for _, p in template_products:
+                    v25 = sheet_prices_25.get(p)
+                    v100 = sheet_prices_100.get(p)
+                    if v25 is not None and v100 is not None:
+                        matching_pairs += 1
+                        if v25 == v100:
+                            identical_pairs += 1
+                if matching_pairs >= 3 and matching_pairs == identical_pairs:
+                    discrepancies.append(Discrepancy(
+                        distributor_key=dist_key,
+                        distributor_label=dist_label,
+                        raw_filename=raw_path.name,
+                        raw_filepath=raw_path,
+                        issue_type="identical_prices_anomaly",
+                        description=f"Дистрибьютор {dist_label}: цены 25% и 100% абсолютно одинаковы для всех {matching_pairs} позиций (ошибочное дублирование одной колонки в обе ячейки).",
+                        affected_products=[p for _, p in template_products if sheet_prices_25.get(p) is not None],
+                        raw_sample_data={
+                            "columns": list(df_raw.columns),
+                            "numeric_price_cols": numeric_cols,
+                            "sample_row": materia_rows[0][0].to_dict() if materia_rows else {}
+                        }
+                    ))
 
             # Check 2: Entirely missing distributor
             all_25_none = all(sheet_prices_25.get(p) is None for _, p in template_products)

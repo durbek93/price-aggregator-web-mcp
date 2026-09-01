@@ -361,11 +361,14 @@ async def collect_latest_files(
                         score += 30.0
                         break
                         
-                main_keywords = ["прайс", "price", "основной", "main"]
+                main_keywords = ["прайс", "price", "основной", "main", "спец"]
                 for kw in main_keywords:
-                    if kw in lower_filename:
+                    if kw in lower_filename or kw in caption_text.lower():
                         score += 20.0
                         break
+
+                if is_biotek and any(kw in lower_filename or kw in caption_text.lower() for kw in ["спец", "спецпрайс", "спец прайс"]):
+                    score += 50.0
                 
                 # 2. Извлечение даты из имени файла (например, 25.08.2026, 25,08,2026, 25_08_2026, 25.08)
                 date_match = re.search(r"(\d{1,2})[.,_](\d{1,2})(?:[.,_](\d{2,4}))?", filename)
@@ -451,6 +454,11 @@ async def collect_latest_files(
                 )
                 await edit_telegram_message(chat_id, message_id, final_msg)
             success = await trigger_aggregation_task(uploaded_ids)
+            if not success:
+                err_msg = "❌ <b>Ошибка при запуске задачи агрегации на сервере.</b>"
+                if chat_id and message_id:
+                    await edit_telegram_message(chat_id, message_id, err_msg)
+                await send_scout_telegram_report(err_msg)
         else:
             logger.info(f"Successfully collected and uploaded {len(uploaded_ids)} files (download-only). Sending Telegram report...")
             success = True

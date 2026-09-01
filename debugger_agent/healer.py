@@ -98,6 +98,14 @@ async def diagnose_and_propose_fix(discrepancy: Discrepancy) -> ProposedFix:
             p100_col = data.get("p100_col") or fallback_p100
             explanation = data.get("explanation", f"Назначить p25='{p25_col}', p100='{p100_col}'")
             
+            # Multi-file distributors should never have identical p25 and p100 mapped from a single file
+            is_multi = discrepancy.distributor_key in ["grand", "promotion", "luxe"]
+            if is_multi and p25_col == p100_col:
+                if "100" in discrepancy.raw_filename.lower():
+                    p25_col = None
+                else:
+                    p100_col = None
+
             return ProposedFix(
                 fix_id=fix_id,
                 distributor_key=discrepancy.distributor_key,

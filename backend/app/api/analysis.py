@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
+import logging
+import openpyxl
 import pandas as pd
 from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -10,6 +12,8 @@ from app.models import User, FileRecord, UserSettings
 from app.api.dependencies import get_current_user
 
 from app.core.price_utils import to_number
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
@@ -79,48 +83,67 @@ def compare_prices(
         )
 
     def load_and_clean_df(path: str) -> pd.DataFrame:
+        mapping = {
+            1: "№",
+            2: "Препарат",
+            3: "Зента Фарм (25% предоплата)",
+            4: "Зента Фарм (100% предоплата)",
+            5: "Гранд Фарм (25% предоплата)",
+            6: "Гранд Фарм (100% предоплата)",
+            7: "Мерос Фарм (25% предоплата)",
+            8: "Мерос Фарм (100% предоплата)",
+            9: "Драг Промоушен (25% предоплата)",
+            10: "Драг Промоушен (100% предоплата)",
+            11: "Фарма Чойз",
+            12: "Биотек Фарм (25% предоплата)",
+            13: "Биотек Фарм (100% предоплата)",
+            14: "Фарм Люкс (25% предоплата)",
+            15: "Фарм Люкс (100% предоплата)",
+            16: "Аэро Фарм (25% предоплата)",
+            17: "Аэро Фарм (100% предоплата)",
+            18: "Дельфарм"
+        }
         try:
-            df = pd.read_excel(path, sheet_name="СвПрайс", header=3)
+            wb = openpyxl.load_workbook(path, data_only=True)
+            sheet = wb["СвПрайс"] if "СвПрайс" in wb.sheetnames else wb.active
+            rows_data = []
+            for r in range(7, 25):
+                p_name = sheet.cell(row=r, column=2).value
+                if not p_name:
+                    continue
+                row_dict = {
+                    "№": sheet.cell(row=r, column=1).value or (r - 6),
+                    "Препарат": str(p_name).strip()
+                }
+                for col_idx in range(3, 19):
+                    col_name = mapping.get(col_idx, f"Col_{col_idx}")
+                    val = sheet.cell(row=r, column=col_idx).value
+                    row_dict[col_name] = to_number(val) if val is not None else None
+                rows_data.append(row_dict)
+            wb.close()
+            if rows_data:
+                return pd.DataFrame(rows_data)
+        except Exception as e:
+            logger.warning(f"openpyxl load failed for {path}: {e}")
+
+        # Fallback via pandas if openpyxl failed
+        try:
+            df = pd.read_excel(path, sheet_name="СвПрайс", header=None)
+            prep_row_idx = None
+            for idx in range(min(10, len(df))):
+                row_vals = [str(x).lower() for x in df.iloc[idx].values]
+                if any("препарат" in x for x in row_vals):
+                    prep_row_idx = idx
+                    break
+            
+            start_row = (prep_row_idx + 1) if prep_row_idx is not None else 6
+            sub_df = df.iloc[start_row:].copy()
+            clean_cols = [mapping.get(i + 1, f"Col_{i+1}") for i in range(sub_df.shape[1])]
+            sub_df.columns = clean_cols[:sub_df.shape[1]]
+            sub_df = sub_df[sub_df["Препарат"].notna()].copy()
+            return sub_df
         except Exception as e:
             raise ValueError(f"Ошибка при чтении Excel: {str(e)}")
-            
-        if df.shape[1] == 18:
-            first_col_val = str(df.columns[1]).lower()
-            if "дистрибьютор" in first_col_val or "препарат" in first_col_val:
-                mapping = {
-                    0: "№",
-                    1: "Препарат",
-                    2: "Зента Фарм (25% предоплата)",
-                    3: "Зента Фарм (100% предоплата)",
-                    4: "Гранд Фарм (25% предоплата)",
-                    5: "Гранд Фарм (100% предоплата)",
-                    6: "Мерос Фарм (25% предоплата)",
-                    7: "Мерос Фарм (100% предоплата)",
-                    8: "Драг Промоушен (25% предоплата)",
-                    9: "Драг Промоушен (100% предоплата)",
-                    10: "Фарма Чойз",
-                    11: "Биотек Фарм (25% предоплата)",
-                    12: "Биотек Фарм (100% предоплата)",
-                    13: "Фарм Люкс (25% предоплата)",
-                    14: "Фарм Люкс (100% предоплата)",
-                    15: "Аэро Фарм (25% предоплата)",
-                    16: "Аэро Фарм (100% предоплата)",
-                    17: "Дельфарм"
-                }
-                df.columns = [mapping.get(i, f"Col_{i}") for i in range(len(df.columns))]
-                df = df[df["№"].notna()].copy()
-                return df
-                
-        # Fallback
-        try:
-            df = pd.read_excel(path, sheet_name="СвПрайс", header=0)
-        except Exception as e:
-            raise ValueError(f"Ошибка при чтении Excel (fallback): {str(e)}")
-            
-        if "Препарат" not in df.columns:
-            if len(df.columns) > 0:
-                df.rename(columns={df.columns[0]: "Препарат"}, inplace=True)
-        return df
 
     try:
         df_curr = load_and_clean_df(current_file.storage_path)

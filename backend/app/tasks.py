@@ -28,7 +28,7 @@ from aiogram.types import FSInputFile
 logger = logging.getLogger(__name__)
 
 
-def send_telegram_doc_sync(telegram_id: int, file_path: str, caption: str) -> None:
+def send_telegram_doc_sync(telegram_id: int | str, file_path: str, caption: str) -> None:
     """Вспомогательная функция для синхронной отправки документа в Telegram."""
     async def _send():
         try:
@@ -38,13 +38,32 @@ def send_telegram_doc_sync(telegram_id: int, file_path: str, caption: str) -> No
             await bot.session.close()
             logger.info(f"Report sent successfully to Telegram ID {telegram_id}")
         except Exception as e:
+            logger.error(f"Failed to send Telegram document to {telegram_id}: {e}")
+
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(_send())
+        else:
+            loop.run_until_complete(_send())
+    except RuntimeError:
+        asyncio.run(_send())
+
+
+def send_telegram_msg_sync(telegram_id: int | str, text: str, parse_mode: str = "HTML") -> None:
+    """Вспомогательная функция для синхронной отправки текстового сообщения в Telegram."""
+    async def _send():
+        try:
+            bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
+            await bot.send_message(chat_id=telegram_id, text=text, parse_mode=parse_mode)
+            await bot.session.close()
+            logger.info(f"Message sent successfully to Telegram ID/Group {telegram_id}")
+        except Exception as e:
             logger.error(f"Failed to send Telegram message to {telegram_id}: {e}")
 
     try:
-        # Пытаемся получить текущий Event Loop или запустить новый
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            # Если loop уже запущен (в некоторых средах), запускаем таску в фоне
             loop.create_task(_send())
         else:
             loop.run_until_complete(_send())
@@ -324,14 +343,17 @@ def run_pipeline_task(self, task_record_id: int) -> Dict[str, Any]:
         task_record.progress_message = f"Ошибка: {str(e)} (Время выполнения: {duration_seconds} сек)"
         db.commit()
         
-        # Отправляем сообщение об ошибке в Telegram
+        # Отправляем сообщение об ошибке в Telegram (пользователю и в группу)
         try:
-            bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
-            asyncio.run(bot.send_message(
-                chat_id=user.telegram_id,
-                text=f"❌ Произошла ошибка при выполнении задачи {task_record.task_type}:\n<code>{str(e)}</code>",
-                parse_mode="HTML"
-            ))
+            error_text = f"❌ Произошла ошибка при выполнении задачи <b>{task_record.task_type}</b>:\n<code>{str(e)}</code>"
+            if user and user.telegram_id:
+                send_telegram_msg_sync(user.telegram_id, error_text)
+            if settings.TELEGRAM_GROUP_ID:
+                group_id_val = settings.TELEGRAM_GROUP_ID
+                if isinstance(group_id_val, str) and ((group_id_val.startswith("-") and group_id_val[1:].isdigit()) or group_id_val.isdigit()):
+                    group_id_val = int(group_id_val)
+                if not (user and str(user.telegram_id) == str(settings.TELEGRAM_GROUP_ID)):
+                    send_telegram_msg_sync(group_id_val, error_text)
         except Exception as telegram_error:
             logger.error(f"Failed to send failure notification to Telegram: {telegram_error}")
 

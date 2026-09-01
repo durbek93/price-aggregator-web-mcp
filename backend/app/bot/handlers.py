@@ -9,11 +9,12 @@ import re
 from typing import List, Optional, Dict
 from aiogram import Router, Bot, F, html
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from pathlib import Path
 
 from app.config import settings
 from app.database import SessionLocal
-from app.models import FileRecord, TaskRecord
+from app.models import User, FileRecord, TaskRecord
 from app.tasks import run_pipeline_task
 from app.bot.keyboards import get_main_keyboard
 from app.bot.utils import generate_magic_link, get_or_create_user
@@ -407,7 +408,77 @@ async def handle_bot_mention_in_group(message: Message) -> None:
         finally:
             db.close()
 
-    # 2. Проверяем команды скачивания прайсов (/fetch, /download_prices, /collect)
+    # 2. Проверяем команду быстрой сборки из сохраненных прайсов (/just_collect, /build_svodny)
+    is_just_collect_trigger = (
+        low_text.startswith(("/just_collect", "/build_svodny", "/just_aggregate")) or
+        "только собрать" in low_text or
+        "быстрая сборка" in low_text or
+        "собери из существующих" in low_text or
+        "собери сводный" in low_text
+    )
+    if is_just_collect_trigger:
+        tg_user = message.from_user
+        if not tg_user or tg_user.id not in settings.allowed_telegram_ids_set:
+            logger.warning(f"User {tg_user.id if tg_user else 'unknown'} tried to trigger just_collect but is not allowed.")
+            return
+            
+        user = get_or_create_user(telegram_id=tg_user.id)
+        db = SessionLocal()
+        try:
+            target_user = user
+            input_files = db.query(FileRecord).filter(
+                FileRecord.user_id == target_user.id,
+                FileRecord.file_type == "input"
+            ).all()
+            
+            if not input_files and target_user.id != 1:
+                # Если у пользователя нет своих файлов, берем загруженные файлы системного пользователя 1
+                input_files = db.query(FileRecord).filter(
+                    FileRecord.user_id == 1,
+                    FileRecord.file_type == "input"
+                ).all()
+                if input_files:
+                    target_user = db.query(User).filter(User.id == 1).first() or target_user
+            
+            if not input_files:
+                await message.reply(
+                    "⚠️ <b>На сервере нет сохраненных исходных файлов прайсов.</b>\n\n"
+                    "Используйте команду <code>/collect</code> для полного сбора с каналов или <code>/fetch</code> для скачивания."
+                )
+                return
+                
+            file_ids = [f.id for f in input_files]
+            file_names_str = ", ".join([f"<code>{f.filename}</code>" for f in input_files[:4]])
+            more_str = f" и еще {len(input_files) - 4} файлов" if len(input_files) > 4 else ""
+            
+            task_record = TaskRecord(
+                user_id=target_user.id,
+                task_type="svodny_horizontal",
+                status="pending",
+                is_automated=True,
+                file_ids=file_ids,
+                progress_message="Постановка задачи в очередь..."
+            )
+            db.add(task_record)
+            db.commit()
+            db.refresh(task_record)
+            
+            run_pipeline_task.delay(task_record.id)
+            
+            await message.reply(
+                f"🚀 <b>Запущена быстрая сборка сводного прайса!</b>\n\n"
+                f"📁 <b>Файлы в обработке ({len(input_files)} шт.):</b>\n{file_names_str}{more_str}\n\n"
+                f"⏱ <i>Формирую отчет (~1 мин)... Готовый результат будет отправлен сюда.</i>"
+            )
+            return
+        except Exception as e:
+            logger.exception(f"Error starting just_collect task: {e}")
+            await message.reply("❌ Ошибка при запуске быстрой сборки сводного прайса.")
+            return
+        finally:
+            db.close()
+
+    # 3. Проверяем команды скачивания прайсов (/fetch, /download_prices, /collect)
     is_fetch_trigger = (
         "@lightprice_aggr_bot" in low_text or 
         "агрегатор" in low_text or 

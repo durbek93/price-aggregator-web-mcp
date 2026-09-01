@@ -23,6 +23,8 @@ dp.callback_query.outer_middleware(AccessMiddleware())
 # Register handlers router
 dp.include_router(handlers_router)
 
+from aiogram.types import BotCommand
+
 async def main() -> None:
     try:
         # Initialize Bot instance with default ParseMode
@@ -30,6 +32,20 @@ async def main() -> None:
             token=settings.TELEGRAM_BOT_TOKEN,
             default=DefaultBotProperties(parse_mode=ParseMode.HTML)
         )
+        
+        # Set bot command suggestions in Telegram
+        try:
+            await bot.set_my_commands([
+                BotCommand(command="collect", description="Полный сбор прайсов и построение сводного"),
+                BotCommand(command="just_collect", description="Быстрая сборка сводного из сохраненных файлов"),
+                BotCommand(command="fetch", description="Скачать свежие прайсы без сборки сводного"),
+                BotCommand(command="clean", description="Очистить файлы за период (напр. /clean 05.2026)"),
+                BotCommand(command="menu", description="Главное меню аналитики"),
+                BotCommand(command="link", description="Ссылка для входа в веб-панель"),
+            ])
+            logger.info("Bot commands registered successfully.")
+        except Exception as e:
+            logger.warning(f"Failed to set bot commands: {e}")
         
         # Run bot polling
         logger.info("Starting Telegram Bot (aiogram v3)...")

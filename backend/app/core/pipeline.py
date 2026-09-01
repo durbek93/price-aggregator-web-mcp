@@ -291,11 +291,11 @@ def find_distributor_columns(label: str) -> Optional[Tuple[int, Optional[int]]]:
         return (5, 6)
     elif "meros" in lbl or "мерос" in lbl:
         return (7, 8)
-    elif "promotion" in lbl or "промоушен" in lbl:
+    elif "promotion" in lbl or "промоушен" in lbl or "промоушн" in lbl:
         return (9, 10)
     elif "choice" in lbl or "чойс" in lbl:
         return (11, None)
-    elif "biotek" in lbl or "биотек" in lbl:
+    elif "biotek" in lbl or "биотек" in lbl or "biotech" in lbl or "спец" in lbl:
         return (12, 13)
     elif "luxe" in lbl or "люкс" in lbl:
         return (14, 15)
@@ -592,7 +592,7 @@ def run_svodny_horizontal(
 
     prev_prices = _load_previous_svodny_prices(output_dir, exclude_filename=out.name)
 
-    shutil.copy(template_path, out)
+    shutil.copyfile(template_path, out)
     
     wb = openpyxl.load_workbook(out)
     sheet = wb["СвПрайс"]
@@ -639,7 +639,7 @@ def run_svodny_horizontal(
         fn_low = filepath.name.lower()
         lbl_low = lbl.lower()
         dist_key = f"{col_mapping[0]}_{col_mapping[1]}"
-        if any(d in lbl_low or d in fn_low for d in ["grand", "гранд", "promotion", "промоушен", "luxe", "люкс"]):
+        if any(d in lbl_low or d in fn_low for d in ["grand", "гранд", "promotion", "промоушен", "промоушн", "luxe", "люкс"]):
             variant = "100" if "100" in fn_low else "25"
             dist_key = f"{dist_key}_{variant}"
 
@@ -692,13 +692,19 @@ def run_svodny_horizontal(
             producer_col = pick_column(list(df_file.columns), prod_c)
             p25_col, p100_col = pick_price_columns(list(df_file.columns), price_c)
             
-            # Check for custom overrides from debugger agent rules
+            fn_low = path.name.lower()
+            lbl_low = lbl.lower()
+            
+            # Check for custom overrides from debugger agent rules for single-file distributors
             dist_rules = load_distributor_rules()
             rule = None
-            for r_key, r_val in dist_rules.items():
-                if r_key.lower() in lbl.lower() or r_key.lower() in path.name.lower():
-                    rule = r_val
-                    break
+            is_multi_file_dist = any(d in lbl_low or d in fn_low for d in ["grand", "гранд", "promotion", "промоушен", "промоушн", "luxe", "люкс"])
+            
+            if not is_multi_file_dist:
+                for r_key, r_val in dist_rules.items():
+                    if r_key.lower() in lbl_low or r_key.lower() in fn_low:
+                        rule = r_val
+                        break
             
             if rule:
                 matched_name = _find_matching_col(rule.get("name_col"), list(df_file.columns))
@@ -710,7 +716,7 @@ def run_svodny_horizontal(
                 matched_p100 = _find_matching_col(rule.get("p100_col"), list(df_file.columns))
                 if matched_p100:
                     p100_col = matched_p100
-            elif "meros" in path.name.lower() or "мерос" in path.name.lower():
+            elif "meros" in fn_low or "мерос" in fn_low or "meros" in lbl_low or "мерос" in lbl_low:
                 # For Meros Pharm, find column for 25% and 100% manually
                 for col in df_file.columns:
                     c_low = str(col).lower().strip()
@@ -727,90 +733,97 @@ def run_svodny_horizontal(
                         break
                 if not p100_col and "Цена 100%" in df_file.columns:
                     p100_col = "Цена 100%"
-            elif "grand" in path.name.lower() or "гранд" in path.name.lower() or "promotion" in path.name.lower() or "промоушен" in path.name.lower():
-                # Check filename and column clues
-                is_100 = False
-                is_25 = False
+            elif any(d in fn_low or d in lbl_low for d in ["grand", "гранд", "promotion", "промоушен", "промоушн"]):
+                # Grand Pharm and Drug Promotion have separate 100% and 25% files
+                is_100 = "100" in fn_low
+                is_25 = "25" in fn_low or not is_100
                 
-                # 1. Filename clues
-                fn_low = path.name.lower()
-                if "100" in fn_low:
-                    is_100 = True
-                elif "25" in fn_low:
-                    is_25 = True
-                    
-                # 2. Column clues
-                price_cols_list = []
-                for col in df_file.columns:
-                    col_clean = " ".join(str(col).lower().split())
-                    if "без ндс" in col_clean or "безндс" in col_clean:
-                        continue
-                    if col_clean in ["ндс", "ндс%", "ставка ндс", "ставка ндс, %", "ндс, %", "заказ", "заказы", "кол-во", "кол во", "сумма", "sum", "total", "количество"]:
-                        continue
-                    if any(x in col_clean for x in ["сумма", "sum", "total"]):
-                        continue
-                    price_cols_list.append((col, col_clean))
-                    
-                # Search for 100% or 25% columns
-                col_100_found = None
-                col_25_found = None
-                for col, col_clean in price_cols_list:
-                    # Exclude dosage volume like "100мл", "100 мг", "25мл"
-                    col_clean_no_dosage = col_clean.replace("мл", "").replace("мг", "").replace("таб", "").replace("кап", "")
-                    if "100" in col_clean_no_dosage:
-                        col_100_found = col
-                        is_100 = True
-                    elif "25" in col_clean_no_dosage:
-                        col_25_found = col
-                        is_25 = True
+                col_price = None
+                patterns = [
+                    ["отпускная цена с ндс", "отпуск.цена с ндс", "отп. цена с ндс"],
+                    ["цена с ндс", "цена (с ндс)", "цена с ндс 100%", "цена с ндс 25%"],
+                    ["отпускная цена", "отпуск.цена", "отп. цена", "отп.цена"],
+                    ["цена", "price", "нарх"],
+                    ["базовая цена"]
+                ]
+                for pattern_group in patterns:
+                    for col in df_file.columns:
+                        col_clean = " ".join(str(col).lower().split())
+                        if "без ндс" in col_clean or "безндс" in col_clean:
+                            continue
+                        if col_clean in ["ндс", "ндс%", "ставка ндс", "ставка ндс, %", "ндс, %", "заказ", "заказы", "кол-во", "кол во", "сумма", "sum", "total", "количество"]:
+                            continue
+                        if any(x in col_clean for x in ["сумма", "sum", "total"]):
+                            continue
+                        if any(p == col_clean or p in col_clean for p in pattern_group):
+                            col_price = col
+                            break
+                    if col_price:
+                        break
                         
-                p25_col = None
-                p100_col = None
-                
-                if col_100_found and col_25_found:
-                    p100_col = col_100_found
-                    p25_col = col_25_found
-                elif is_100:
-                    # Parse as 100% file
-                    p100_col = col_100_found
-                    if not p100_col:
-                        valid_cols = [c for c, _ in price_cols_list]
-                        p100_col = pick_price_column(valid_cols, price_c)
-                else:
-                    # Parse as 25% file
-                    p25_col = col_25_found
-                    if not p25_col:
-                        for col, col_clean in price_cols_list:
-                            if any(x in col_clean for x in ["отпускная цена с ндс", "отпуск.цена с ндс", "отпускная цена", "отпуск.цена", "отп. цена", "отп.цена"]):
-                                p25_col = col
-                                break
-                    if not p25_col:
-                        valid_cols = [c for c, _ in price_cols_list]
-                        p25_col = pick_price_column(valid_cols, price_c)
-            elif "luxe" in path.name.lower() or "люкс" in path.name.lower():
-                # For Pharm Luxe, filename-based extraction
-                p100_col = None
-                p25_col = None
-                col_price = pick_price_column(list(df_file.columns), price_c)
-                if "100" in path.name.lower():
+                if not col_price:
+                    valid_cols = [c for c in df_file.columns if "без ндс" not in str(c).lower() and "безндс" not in str(c).lower()]
+                    col_price = pick_price_column(valid_cols, price_c)
+                    
+                if is_100:
                     p100_col = col_price
-                elif "завод" in path.name.lower() or "zavod" in path.name.lower() or "25" in path.name.lower():
-                    p25_col = col_price
+                    p25_col = None
                 else:
-                    p25_col, p100_col = pick_price_columns(list(df_file.columns), price_c)
-            elif "biotek" in path.name.lower() or "биотек" in path.name.lower() or "biotek" in lbl.lower() or "биотек" in lbl.lower():
+                    p25_col = col_price
+                    p100_col = None
+            elif "luxe" in fn_low or "люкс" in fn_low or "luxe" in lbl_low or "люкс" in lbl_low:
+                # For Pharm Luxe, separate 100% and 25% files
+                col_price = None
+                patterns = [
+                    ["цена с ндс", "цена (с ндс)", "цена с ндс 100%", "цена с ндс 25%"],
+                    ["отпускная цена с ндс", "отпуск.цена с ндс", "отп. цена с ндс"],
+                    ["отпускная цена", "отпуск.цена", "отп. цена", "отп.цена"],
+                    ["цена", "price", "нарх"],
+                    ["базовая цена"]
+                ]
+                for pattern_group in patterns:
+                    for col in df_file.columns:
+                        col_clean = " ".join(str(col).lower().split())
+                        if "без ндс" in col_clean or "безндс" in col_clean:
+                            continue
+                        if col_clean in ["ндс", "ндс%", "ставка ндс", "ставка ндс, %", "ндс, %", "заказ", "заказы", "кол-во", "кол во", "сумма", "sum", "total", "количество"]:
+                            continue
+                        if any(x in col_clean for x in ["сумма", "sum", "total"]):
+                            continue
+                        if any(p == col_clean or p in col_clean for p in pattern_group):
+                            col_price = col
+                            break
+                    if col_price:
+                        break
+                        
+                if not col_price:
+                    col_price = pick_price_column(list(df_file.columns), price_c)
+                    
+                if "100" in fn_low:
+                    p100_col = col_price
+                    p25_col = None
+                else:
+                    p25_col = col_price
+                    p100_col = None
+            elif "biotek" in fn_low or "биотек" in fn_low or "biotek" in lbl_low or "биотек" in lbl_low or "biotech" in fn_low or "спец" in fn_low or "спец" in lbl_low:
                 # For Biotek Pharm
                 raw_cols = list(df_file.columns)
                 name_col_idx = raw_cols.index(name_col) if name_col in raw_cols else None
 
-                # Look for explicit discount columns
+                # Look for explicit discount / special price columns
                 explicit_100_col = None
                 explicit_25_col = None
                 for col in raw_cols:
                     c_clean = str(col).strip().lower().replace("–", "-").replace("—", "-").replace("−", "-")
-                    if any(c_clean == t or c_clean.replace(" ", "") == t.replace(" ", "") for t in ["цена-4", "цена 4", "цена - 4", "-4", "-4%", "цена-3", "цена 3", "цена - 3", "-3", "-3%", "цена-2", "цена 2", "цена - 2", "-2", "-2%", "100%", "цена 100%"]):
+                    if any(c_clean == t or c_clean.replace(" ", "") == t.replace(" ", "") or t in c_clean for t in [
+                        "цена-4", "цена 4", "цена - 4", "-4", "-4%", 
+                        "цена-3", "цена 3", "цена - 3", "-3", "-3%", 
+                        "цена-2", "цена 2", "цена - 2", "-2", "-2%", 
+                        "100%", "цена 100%", "спец прайс", "спец. прайс", "спецпрайс",
+                        "спец цена", "спец. цена", "спеццена", "цена спец", "цена со скидкой"
+                    ]):
                         explicit_100_col = col
-                    if c_clean in ["цена", "базовая цена", "отпускная цена", "отп.цена", "цена без скидки"]:
+                    if any(c_clean == t or c_clean.replace(" ", "") == t.replace(" ", "") for t in ["цена", "базовая цена", "отпускная цена", "отп.цена", "цена без скидки"]):
                         if not explicit_25_col:
                             explicit_25_col = col
 

@@ -30,7 +30,7 @@ class FileService:
         if "grand" in name_low or "гранд" in name_low:
             variant = "100" if "100" in name_low else "25"
             return f"grand_{variant}"
-        if "promotion" in name_low or "промоушен" in name_low:
+        if "promotion" in name_low or "промоушен" in name_low or "промоушн" in name_low:
             variant = "100" if "100" in name_low else "25"
             return f"promotion_{variant}"
         if "luxe" in name_low or "люкс" in name_low:
@@ -38,7 +38,7 @@ class FileService:
             return f"luxe_{variant}"
         if "zenta" in name_low or "зента" in name_low:
             return "zenta"
-        if "biotek" in name_low or "биотек" in name_low:
+        if "biotek" in name_low or "биотек" in name_low or "biotech" in name_low:
             return "biotek"
         if "meros" in name_low or "мерос" in name_low:
             return "meros"

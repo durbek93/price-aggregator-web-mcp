@@ -27,6 +27,12 @@ DEFAULT_NAME_CANDIDATES = [
     "Наимменование",
 ]
 DEFAULT_PRICE_CANDIDATES = [
+    "Отпускная цена с НДС",
+    "Отпуск.цена с НДС",
+    "Отпускная цена",
+    "Отп. цена с НДС",
+    "Отп. цена",
+    "Отп.цена",
     "Цена отпускная под 100%",
     "Цена (100%) с НДС",
     "Цена При 100 % оплате цена",
@@ -51,6 +57,13 @@ DEFAULT_PRICE_CANDIDATES = [
     "Цена переч:",
     "Цена реал",
     "ПриходЦена",
+    "Спец прайс",
+    "Спец. прайс",
+    "Спецпрайс",
+    "Спец цена",
+    "Спец. цена",
+    "Спеццена",
+    "Цена спец",
     "Сумма заказ",
     "Сумма",
     "Отп. Цена",
@@ -181,38 +194,36 @@ def resolve_price_column_for_sheet(df: pd.DataFrame, path: Path, price_candidate
             return "Цена"
             
     elif "grand" in name_low or "гранд" in name_low:
-        if "100" in name_low:
-            for col in cols:
-                c_low = str(col).lower().strip()
-                if "без ндс" in c_low or "безндс" in c_low:
-                    continue
-                if "100" in c_low:
-                    return col
-            # Fallback
-            valid_cols = [c for c in cols if "без ндс" not in str(c).lower() and "безндс" not in str(c).lower()]
-            return pick_price_column(valid_cols, price_candidates)
-        else:
-            for col in cols:
-                col_clean = " ".join(str(col).lower().split())
-                if "без ндс" in col_clean or "безндс" in col_clean:
-                    continue
-                if any(x in col_clean for x in ["отпускная цена с ндс", "отпуск.цена с ндс", "отпускная цена", "отпуск.цена", "отп. цена", "отп.цена"]):
-                    return col
-            # Fallback
-            valid_cols = [c for c in cols if "без ндс" not in str(c).lower() and "безндс" not in str(c).lower()]
-            return pick_price_column(valid_cols, price_candidates)
+        for col in cols:
+            col_clean = " ".join(str(col).lower().split())
+            if "без ндс" in col_clean or "безндс" in col_clean:
+                continue
+            if any(x in col_clean for x in ["отпускная цена с ндс", "отпуск.цена с ндс", "цена с ндс", "отпускная цена", "отпуск.цена", "отп. цена", "отп.цена", "базовая цена", "цена"]):
+                return col
+        valid_cols = [c for c in cols if "без ндс" not in str(c).lower() and "безндс" not in str(c).lower()]
+        return pick_price_column(valid_cols, price_candidates)
             
     elif "luxe" in name_low or "люкс" in name_low:
+        for col in cols:
+            col_clean = " ".join(str(col).lower().split())
+            if any(x in col_clean for x in ["цена с ндс", "цена", "отпускная"]):
+                return col
         return pick_price_column(cols, price_candidates)
         
-    elif "biotek" in name_low or "биотек" in name_low:
+    elif "biotek" in name_low or "биотек" in name_low or "спец" in name_low:
         found_col = None
-        # First check for explicit columns like Цена-4, Цена 4, -4, Цена-3, Цена 3, -3
-        target_names = ["цена-4", "цена 4", "цена - 4", "-4", "цена-3", "цена 3", "цена - 3", "-3", "цена-2", "цена 2", "цена - 2", "-2"]
+        # First check for explicit columns like Цена-4, Цена 4, -4, Цена-3, Цена 3, -3, Спец прайс
+        target_names = [
+            "цена-4", "цена 4", "цена - 4", "-4", "-4%", 
+            "цена-3", "цена 3", "цена - 3", "-3", "-3%", 
+            "цена-2", "цена 2", "цена - 2", "-2", "-2%", 
+            "100%", "цена 100%", "спец прайс", "спец. прайс", "спецпрайс",
+            "спец цена", "спец. цена", "спеццена", "цена спец", "цена со скидкой"
+        ]
         for target in target_names:
             for col in df.columns:
                 c_norm = str(col).lower().replace("–", "-").replace("—", "-").replace("−", "-").strip()
-                if c_norm == target or c_norm.replace(" ", "") == target.replace(" ", ""):
+                if c_norm == target or c_norm.replace(" ", "") == target.replace(" ", "") or target in c_norm:
                     found_col = col
                     break
             if found_col:
@@ -282,7 +293,7 @@ def _grand_farm_header_row(
     try:
         ws = wb.active
         for excel_row_1based, row in enumerate(
-            ws.iter_rows(min_row=1, max_row=5000, values_only=True),
+            ws.iter_rows(min_row=1, max_row=500, values_only=True),
             start=1,
         ):
             normed: set = set()

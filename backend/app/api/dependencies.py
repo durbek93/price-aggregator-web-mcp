@@ -188,6 +188,15 @@ def auto_discover_user_files(db: Session, user_id: int):
             ).first()
             
             if not existing_task:
+                # Если в данный момент выполняется или ожидает задача того же пользователя,
+                # не создаем фантомную завершенную задачу из существующего на диске файла
+                active_task = db.query(TaskRecord).filter(
+                    TaskRecord.user_id == user_id,
+                    TaskRecord.status.in_(["pending", "running"])
+                ).first()
+                if active_task:
+                    continue
+
                 task_type = 'svodny_horizontal'
                 task_name_ru = 'Сводный прайс'
                 if 'верт' in filename_nfc.lower():
@@ -278,12 +287,18 @@ def auto_discover_user_files(db: Session, user_id: int):
         else:
             seen_file_paths.add(norm_path)
 
-    # Оставляем только самую новую завершенную TaskRecord для каждого уникального result_file_path
+    # Оставляем только самую актуальную завершенную TaskRecord для каждого уникального result_file_path.
+    # В первую очередь сохраняем задачи, запущенные через систему/Celery (celery_task_id IS NOT NULL),
+    # а затем самые новые по created_at и id.
     completed_tasks = db.query(TaskRecord).filter(
         TaskRecord.user_id == user_id,
         TaskRecord.status == 'completed',
         TaskRecord.result_file_path != None
-    ).order_by(TaskRecord.created_at.desc(), TaskRecord.id.desc()).all()
+    ).order_by(
+        TaskRecord.celery_task_id.isnot(None).desc(),
+        TaskRecord.created_at.desc(),
+        TaskRecord.id.desc()
+    ).all()
     
     seen_task_paths = set()
     for t in completed_tasks:

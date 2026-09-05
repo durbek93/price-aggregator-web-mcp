@@ -242,7 +242,7 @@ async def execute_apply_fix(req: FixActionRequest) -> Dict[str, Any]:
         return {"status": "error", "message": "Failed to trigger backend pipeline"}
 
     # 3. Wait for completion
-    success = await wait_for_task_completion(task_id, timeout_sec=120)
+    success = await wait_for_task_completion(task_id, timeout_sec=180)
     if not success:
         if chat_id and bot:
             await bot.send_message(chat_id, "❌ Ошибка: пересборка завершилась сбоем.")

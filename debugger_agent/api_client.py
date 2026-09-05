@@ -68,7 +68,7 @@ async def trigger_rerun_pipeline() -> Optional[int]:
     return None
 
 
-async def wait_for_task_completion(task_id: int, timeout_sec: int = 90) -> bool:
+async def wait_for_task_completion(task_id: int, timeout_sec: int = 180) -> bool:
     """Polls backend until task is completed or failed."""
     headers = {
         "X-Internal-API-Key": config.INTERNAL_API_KEY,
@@ -79,19 +79,21 @@ async def wait_for_task_completion(task_id: int, timeout_sec: int = 90) -> bool:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(
-                    f"{config.BACKEND_URL}/api/tasks",
+                    f"{config.BACKEND_URL}/api/tasks/{task_id}",
                     headers=headers
                 )
                 if resp.status_code == 200:
-                    tasks = resp.json()
-                    for t in tasks:
-                        if t.get("id") == task_id:
-                            status = t.get("status")
-                            if status == "completed":
-                                return True
-                            elif status == "failed":
-                                logger.error(f"Task {task_id} failed: {t.get('progress_message')}")
-                                return False
+                    t = resp.json()
+                    status = t.get("status")
+                    if status == "completed":
+                        return True
+                    elif status == "failed":
+                        logger.error(f"Task {task_id} failed: {t.get('progress_message')}")
+                        return False
+                elif resp.status_code == 404:
+                    logger.warning(f"Task {task_id} not found yet (404), retrying...")
+                else:
+                    logger.warning(f"Unexpected status code {resp.status_code} checking task {task_id}: {resp.text}")
         except Exception as e:
             logger.warning(f"Error checking task status: {e}")
         await asyncio.sleep(2)

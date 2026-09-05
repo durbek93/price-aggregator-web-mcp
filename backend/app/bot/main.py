@@ -33,17 +33,20 @@ async def main() -> None:
             default=DefaultBotProperties(parse_mode=ParseMode.HTML)
         )
         
-        # Set bot command suggestions in Telegram
+        # Set bot command suggestions in Telegram for private and group chats
         try:
-            await bot.set_my_commands([
+            from aiogram.types import BotCommandScopeDefault, BotCommandScopeAllGroupChats
+            bot_commands = [
                 BotCommand(command="collect", description="Полный сбор прайсов и построение сводного"),
                 BotCommand(command="just_collect", description="Быстрая сборка сводного из сохраненных файлов"),
                 BotCommand(command="fetch", description="Скачать свежие прайсы без сборки сводного"),
                 BotCommand(command="clean", description="Очистить файлы за период (напр. /clean 05.2026)"),
                 BotCommand(command="menu", description="Главное меню аналитики"),
                 BotCommand(command="link", description="Ссылка для входа в веб-панель"),
-            ])
-            logger.info("Bot commands registered successfully.")
+            ]
+            await bot.set_my_commands(bot_commands, scope=BotCommandScopeDefault())
+            await bot.set_my_commands(bot_commands, scope=BotCommandScopeAllGroupChats())
+            logger.info("Bot commands registered successfully for all scopes.")
         except Exception as e:
             logger.warning(f"Failed to set bot commands: {e}")
         

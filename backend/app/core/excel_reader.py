@@ -198,9 +198,11 @@ def resolve_price_column_for_sheet(df: pd.DataFrame, path: Path, price_candidate
             col_clean = " ".join(str(col).lower().split())
             if "без ндс" in col_clean or "безндс" in col_clean:
                 continue
-            if any(x in col_clean for x in ["отпускная цена с ндс", "отпуск.цена с ндс", "цена с ндс", "отпускная цена", "отпуск.цена", "отп. цена", "отп.цена", "базовая цена", "цена"]):
+            if "базов" in col_clean:
+                continue
+            if any(x in col_clean for x in ["отпускная цена с ндс", "отпуск.цена с ндс", "цена с ндс", "отпускная цена", "отпуск.цена", "отп. цена", "отп.цена", "цена"]):
                 return col
-        valid_cols = [c for c in cols if "без ндс" not in str(c).lower() and "безндс" not in str(c).lower()]
+        valid_cols = [c for c in cols if "без ндс" not in str(c).lower() and "безндс" not in str(c).lower() and "базов" not in str(c).lower()]
         return pick_price_column(valid_cols, price_candidates)
             
     elif "luxe" in name_low or "люкс" in name_low:
@@ -293,7 +295,7 @@ def _grand_farm_header_row(
     try:
         ws = wb.active
         for excel_row_1based, row in enumerate(
-            ws.iter_rows(min_row=1, max_row=500, values_only=True),
+            ws.iter_rows(min_row=1, max_row=5000, values_only=True),
             start=1,
         ):
             normed: set = set()

@@ -52,7 +52,7 @@ def _read_excel_file(path: Path) -> pd.DataFrame:
         
         # Find header row
         hdr_idx = 0
-        for r_i in range(min(500, len(df_raw))):
+        for r_i in range(min(5000, len(df_raw))):
             row_vals = [str(x).lower().strip() for x in df_raw.iloc[r_i] if pd.notna(x)]
             if any(k in row_vals for k in ["наименование", "название", "товар", "номенклатура", "препарат", "медикамент"]):
                 hdr_idx = r_i
@@ -322,7 +322,7 @@ def audit_svodny_price(svodny_path: Path, upload_dir: Path) -> AuditReport:
                 if c == name_col:
                     continue
                 c_low = str(c).lower()
-                if any(x in c_low for x in ["орг. уп", "произ.", "производитель", "годности", "годность", "код", "арт"]):
+                if any(x in c_low for x in ["орг. уп", "произ.", "производитель", "годности", "годность", "код", "арт"]) or "базов" in c_low:
                     continue
                 valid_cnt = 0
                 for v in df_raw[c].dropna().head(100):

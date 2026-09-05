@@ -737,32 +737,59 @@ def run_svodny_horizontal(
                 # Grand Pharm and Drug Promotion have separate 100% and 25% files
                 is_100 = "100" in fn_low
                 is_25 = "25" in fn_low or not is_100
-                
+
+                # For Grand Pharm: if file has Отп. цена без НДС and ставка НДС, compute Отпускная цена с НДС
+                if any(d in fn_low or d in lbl_low for d in ["grand", "гранд"]):
+                    if any("отп" in str(c).lower() and "без ндс" in str(c).lower() for c in df_file.columns) and not any("отпускная цена с ндс" in str(c).lower() for c in df_file.columns):
+                        base_col = next((c for c in df_file.columns if "отп" in str(c).lower() and "без ндс" in str(c).lower()), None)
+                        nds_col = next((c for c in df_file.columns if "ставка" in str(c).lower() and "ндс" in str(c).lower()), None)
+                        if base_col:
+                            def _calc_grand_nds(row):
+                                b = to_number(row.get(base_col))
+                                if b is None:
+                                    return None
+                                n = to_number(row.get(nds_col)) if nds_col else 0.12
+                                if n is None or n <= 0:
+                                    n = 0.12
+                                elif n > 1.0:
+                                    n = n / 100.0
+                                return round(b * (1.0 + n), 2)
+                            df_file["Отпускная цена с НДС"] = df_file.apply(_calc_grand_nds, axis=1)
+
                 col_price = None
-                patterns = [
-                    ["отпускная цена с ндс", "отпуск.цена с ндс", "отп. цена с ндс"],
-                    ["цена с ндс", "цена (с ндс)", "цена с ндс 100%", "цена с ндс 25%"],
-                    ["отпускная цена", "отпуск.цена", "отп. цена", "отп.цена"],
-                    ["цена", "price", "нарх"],
-                    ["базовая цена"]
-                ]
-                for pattern_group in patterns:
+                if is_100:
                     for col in df_file.columns:
-                        col_clean = " ".join(str(col).lower().split())
-                        if "без ндс" in col_clean or "безндс" in col_clean:
-                            continue
-                        if col_clean in ["ндс", "ндс%", "ставка ндс", "ставка ндс, %", "ндс, %", "заказ", "заказы", "кол-во", "кол во", "сумма", "sum", "total", "количество"]:
-                            continue
-                        if any(x in col_clean for x in ["сумма", "sum", "total"]):
-                            continue
-                        if any(p == col_clean or p in col_clean for p in pattern_group):
+                        c_low = str(col).lower().strip()
+                        if "100" in c_low and ("цена" in c_low or "%" in c_low):
                             col_price = col
                             break
-                    if col_price:
-                        break
-                        
+
                 if not col_price:
-                    valid_cols = [c for c in df_file.columns if "без ндс" not in str(c).lower() and "безндс" not in str(c).lower()]
+                    patterns = [
+                        ["отпускная цена с ндс", "отпуск.цена с ндс", "отп. цена с ндс"],
+                        ["цена с ндс", "цена (с ндс)", "цена с ндс 100%", "цена с ндс 25%"],
+                        ["отпускная цена", "отпуск.цена", "отп. цена", "отп.цена"],
+                        ["цена", "price", "нарх"],
+                    ]
+                    for pattern_group in patterns:
+                        for col in df_file.columns:
+                            col_clean = " ".join(str(col).lower().split())
+                            if "без ндс" in col_clean or "безндс" in col_clean:
+                                continue
+                            if "базов" in col_clean:
+                                continue
+                            if col_clean in ["ндс", "ндс%", "ставка ндс", "ставка ндс, %", "ндс, %", "заказ", "заказы", "кол-во", "кол во", "сумма", "sum", "total", "количество"]:
+                                continue
+                            if any(x in col_clean for x in ["сумма", "sum", "total"]):
+                                continue
+                            if any(p == col_clean or p in col_clean for p in pattern_group):
+                                col_price = col
+                                break
+                        if col_price:
+                            break
+                            
+                if not col_price:
+                    valid_cols = [c for c in df_file.columns if "без ндс" not in str(c).lower() and "безндс" not in str(c).lower() and "базов" not in str(c).lower()]
                     col_price = pick_price_column(valid_cols, price_c)
                     
                 if is_100:
@@ -779,12 +806,13 @@ def run_svodny_horizontal(
                     ["отпускная цена с ндс", "отпуск.цена с ндс", "отп. цена с ндс"],
                     ["отпускная цена", "отпуск.цена", "отп. цена", "отп.цена"],
                     ["цена", "price", "нарх"],
-                    ["базовая цена"]
                 ]
                 for pattern_group in patterns:
                     for col in df_file.columns:
                         col_clean = " ".join(str(col).lower().split())
                         if "без ндс" in col_clean or "безндс" in col_clean:
+                            continue
+                        if "базов" in col_clean:
                             continue
                         if col_clean in ["ндс", "ндс%", "ставка ндс", "ставка ндс, %", "ндс, %", "заказ", "заказы", "кол-во", "кол во", "сумма", "sum", "total", "количество"]:
                             continue
@@ -797,7 +825,8 @@ def run_svodny_horizontal(
                         break
                         
                 if not col_price:
-                    col_price = pick_price_column(list(df_file.columns), price_c)
+                    valid_cols = [c for c in df_file.columns if "без ндс" not in str(c).lower() and "безндс" not in str(c).lower() and "базов" not in str(c).lower()]
+                    col_price = pick_price_column(valid_cols, price_c)
                     
                 if "100" in fn_low:
                     p100_col = col_price

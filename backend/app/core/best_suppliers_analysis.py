@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from collections import defaultdict
 from datetime import datetime
@@ -65,6 +66,9 @@ def classify_preparation(raw_name: str) -> Optional[str]:
     """
     n = normalize_text(raw_name)
     if not n:
+        return None
+
+    if re.search(r'(?:^|[\s\-_/(\[])(?:сдк|sdk)(?:$|[\s\-_/)\]])', n):
         return None
 
     if "анаферон" in n:

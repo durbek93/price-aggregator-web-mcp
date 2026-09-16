@@ -27,7 +27,7 @@ if DISTRIBUTOR_CHANNELS_RAW:
 
 # Configurations for on-demand bot requests
 DEMAND_BOT_USERNAME = os.getenv("DEMAND_BOT_USERNAME", "")
-DEMAND_BOT_TRIGGER_CRON = os.getenv("DEMAND_BOT_TRIGGER_CRON", "0 14 * * 0,2,3,5,6")  # Каждый день кроме Пн и Чт в 14:00 (Вт, Ср, Пт, Сб, Вс)
+DEMAND_BOT_TRIGGER_CRON = os.getenv("DEMAND_BOT_TRIGGER_CRON", "0 14 * * 0,2,3,5,6")  # Вт, Ср, Пт, Сб, Вс в 14:00 (по Ташкенту, Asia/Tashkent)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_GROUP_ID = os.getenv("TELEGRAM_GROUP_ID", "")

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import re
 import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
@@ -96,6 +97,10 @@ def match_raw_to_template_product(raw_name: str, template_products: List[Tuple[i
     Follows canonical pharmaceutical form matching rules.
     """
     raw_norm = " ".join(str(raw_name).lower().split())
+
+    # Exclude SDK / generic copies / Salomatlik / Kelajak
+    if re.search(r'(?:^|[\s\-_/(\[])(?:сдк|sdk)(?:$|[\s\-_/)\]])', raw_norm) or any(x in raw_norm for x in ["salomatlik", "kelajak"]):
+        return None
 
     def contains_any(word: str, substrings: List[str]) -> bool:
         return any(x in word for x in substrings)

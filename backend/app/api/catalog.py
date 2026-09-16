@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import re
 import json
 from pathlib import Path
 from typing import List, Optional
@@ -19,6 +20,9 @@ DEFAULT_CATALOG_FILE = Path(__file__).parent / "default_catalog.json"
 
 def get_exclusive_brand_target(norm_name: str) -> Optional[str]:
     """Возвращает каноническое название для разделения форм анаферона, тенотена и ренгалина."""
+    if re.search(r'(?:^|[\s\-_/(\[])(?:сдк|sdk)(?:$|[\s\-_/)\]])', norm_name):
+        return None
+
     if "анаферон" in norm_name:
         if "капл" in norm_name or "25мл" in norm_name:
             return "Анаферон капли (детские) 25мл"

@@ -51,6 +51,7 @@ services:
       - JWT_SECRET=${JWT_SECRET:-super_secret_jwt_key_12345}
       - INTERNAL_API_KEY=${INTERNAL_API_KEY}
       - TELEGRAM_GROUP_ID=${TELEGRAM_GROUP_ID}
+      - TZ=Asia/Tashkent
       - UPLOAD_DIR=/app/data/uploads
       - OUTPUT_DIR=/app/data/outputs
     volumes:
@@ -76,6 +77,7 @@ services:
       - JWT_SECRET=${JWT_SECRET:-super_secret_jwt_key_12345}
       - INTERNAL_API_KEY=${INTERNAL_API_KEY}
       - TELEGRAM_GROUP_ID=${TELEGRAM_GROUP_ID}
+      - TZ=Asia/Tashkent
       - UPLOAD_DIR=/app/data/uploads
       - OUTPUT_DIR=/app/data/outputs
     volumes:
@@ -99,6 +101,7 @@ services:
       - ALLOWED_TELEGRAM_IDS=${ALLOWED_TELEGRAM_IDS}
       - FRONTEND_URL=${FRONTEND_URL}
       - JWT_SECRET=${JWT_SECRET:-super_secret_jwt_key_12345}
+      - TZ=Asia/Tashkent
       - UPLOAD_DIR=/app/data/uploads
       - OUTPUT_DIR=/app/data/outputs
       - INTERNAL_API_KEY=${INTERNAL_API_KEY}
@@ -143,6 +146,7 @@ services:
       - DEMAND_BOT_USERNAME=${DEMAND_BOT_USERNAME}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_GROUP_ID=${TELEGRAM_GROUP_ID}
+      - TZ=Asia/Tashkent
     depends_on:
       - backend
 
@@ -159,6 +163,7 @@ services:
       - INTERNAL_API_KEY=${INTERNAL_API_KEY}
       - BACKEND_URL=http://backend:8000
       - TELEGRAM_GROUP_ID=${TELEGRAM_GROUP_ID}
+      - TZ=Asia/Tashkent
       - PYTHONPATH=/app
     volumes:
       - ./analyst_agent:/app
@@ -180,6 +185,7 @@ services:
       - GEMINI_MODEL=gemini-2.5-flash
       - INTERNAL_API_KEY=${INTERNAL_API_KEY}
       - BACKEND_URL=http://backend:8000
+      - TZ=Asia/Tashkent
       - UPLOAD_DIR=/app/data/uploads
       - OUTPUT_DIR=/app/data/outputs
       - RULES_FILE=/app/data/distributor_rules.json

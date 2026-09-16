@@ -39,9 +39,9 @@ def extract_by_producer(
         name_val = r.get(name_col)
         if name_val is None or (isinstance(name_val, float) and pd.isna(name_val)):
             continue
-        if is_excluded_product(str(name_val)):
-            continue
         producer_val = r.get(producer_col) if producer_col else ""
+        if is_excluded_product(str(name_val), producer_val):
+            continue
         prod_norm = normalize_name(str(producer_val or ""))
         if not any(s.lower() in prod_norm for s in producer_substrings):
             continue
@@ -85,10 +85,10 @@ def extract_materia_any(
         name_val = r.get(name_col)
         if name_val is None or (isinstance(name_val, float) and pd.isna(name_val)):
             continue
-        if is_excluded_product(str(name_val)):
+        producer_val = r.get(producer_col) if producer_col else ""
+        if is_excluded_product(str(name_val), producer_val):
             continue
         name_norm = normalize_name(str(name_val))
-        producer_val = r.get(producer_col) if producer_col else ""
         prod_norm = normalize_name(str(producer_val or ""))
         if producer_substrings is None:
             by_producer = is_materia_producer_norm(prod_norm)

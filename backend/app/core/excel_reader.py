@@ -27,12 +27,6 @@ DEFAULT_NAME_CANDIDATES = [
     "Наимменование",
 ]
 DEFAULT_PRICE_CANDIDATES = [
-    "Отпускная цена с НДС",
-    "Отпуск.цена с НДС",
-    "Отпускная цена",
-    "Отп. цена с НДС",
-    "Отп. цена",
-    "Отп.цена",
     "Цена отпускная под 100%",
     "Цена (100%) с НДС",
     "Цена При 100 % оплате цена",
@@ -57,13 +51,6 @@ DEFAULT_PRICE_CANDIDATES = [
     "Цена переч:",
     "Цена реал",
     "ПриходЦена",
-    "Спец прайс",
-    "Спец. прайс",
-    "Спецпрайс",
-    "Спец цена",
-    "Спец. цена",
-    "Спеццена",
-    "Цена спец",
     "Сумма заказ",
     "Сумма",
     "Отп. Цена",
@@ -81,7 +68,7 @@ def _normalize_col_for_match(col: str) -> str:
     """Нормализация названия колонки для сопоставления с кандидатами."""
     if not isinstance(col, str):
         return ""
-    s = col.replace("\n", " ").replace("\r", " ").replace("\t", " ").strip()
+    s = " ".join(str(col).replace("\xa0", " ").split())
     while s and s[-1] in ":;":
         s = s[:-1].strip()
     return s.casefold()
@@ -176,56 +163,64 @@ def resolve_price_column_for_sheet(df: pd.DataFrame, path: Path, price_candidate
     rules = load_distributor_rules()
     for r_k, r_v in rules.items():
         if r_k.lower() in name_low:
-            if r_v.get("p100_col") and r_v["p100_col"] in cols:
-                return r_v["p100_col"]
-            if r_v.get("p25_col") and r_v["p25_col"] in cols:
-                return r_v["p25_col"]
+            c100 = r_v.get("p100_col")
+            if c100:
+                for c in cols:
+                    if "".join(str(c).lower().split()) == "".join(str(c100).lower().split()):
+                        return c
+            c25 = r_v.get("p25_col")
+            if c25:
+                for c in cols:
+                    if "".join(str(c).lower().split()) == "".join(str(c25).lower().split()):
+                        return c
 
     if "meros" in name_low or "мерос" in name_low:
         for col in cols:
-            c_low = str(col).lower().strip()
-            if c_low in ["цена 100%", "цена100%", "100% оплата", "100%оплата", "при 100% оплате", "при100%оплате"]:
+            c_clean = "".join(str(col).lower().split())
+            if any(k in c_clean for k in ["при100%оплате", "цена100%", "100%оплата"]):
                 return col
         for col in cols:
-            c_low = str(col).lower().strip()
-            if c_low in ["цена договорная", "ценадоговорная", "цена"]:
+            c_clean = "".join(str(col).lower().split())
+            if "договорная" in c_clean or "договор" in c_clean:
                 return col
-        if "Цена" in cols:
-            return "Цена"
+        for col in cols:
+            c_clean = "".join(str(col).lower().split())
+            if c_clean == "цена":
+                return col
             
     elif "grand" in name_low or "гранд" in name_low:
-        for col in cols:
-            col_clean = " ".join(str(col).lower().split())
-            if "без ндс" in col_clean or "безндс" in col_clean:
-                continue
-            if "базов" in col_clean:
-                continue
-            if any(x in col_clean for x in ["отпускная цена с ндс", "отпуск.цена с ндс", "цена с ндс", "отпускная цена", "отпуск.цена", "отп. цена", "отп.цена", "цена"]):
-                return col
-        valid_cols = [c for c in cols if "без ндс" not in str(c).lower() and "безндс" not in str(c).lower() and "базов" not in str(c).lower()]
-        return pick_price_column(valid_cols, price_candidates)
+        if "100" in name_low:
+            for col in cols:
+                c_low = str(col).lower().strip()
+                if "без ндс" in c_low or "безндс" in c_low:
+                    continue
+                if "100" in c_low:
+                    return col
+            # Fallback
+            valid_cols = [c for c in cols if "без ндс" not in str(c).lower() and "безндс" not in str(c).lower()]
+            return pick_price_column(valid_cols, price_candidates)
+        else:
+            for col in cols:
+                col_clean = " ".join(str(col).lower().split())
+                if "без ндс" in col_clean or "безндс" in col_clean:
+                    continue
+                if any(x in col_clean for x in ["отпускная цена с ндс", "отпуск.цена с ндс", "отпускная цена", "отпуск.цена", "отп. цена", "отп.цена"]):
+                    return col
+            # Fallback
+            valid_cols = [c for c in cols if "без ндс" not in str(c).lower() and "безндс" not in str(c).lower()]
+            return pick_price_column(valid_cols, price_candidates)
             
     elif "luxe" in name_low or "люкс" in name_low:
-        for col in cols:
-            col_clean = " ".join(str(col).lower().split())
-            if any(x in col_clean for x in ["цена с ндс", "цена", "отпускная"]):
-                return col
         return pick_price_column(cols, price_candidates)
         
-    elif "biotek" in name_low or "биотек" in name_low or "спец" in name_low:
+    elif "biotek" in name_low or "биотек" in name_low:
         found_col = None
-        # First check for explicit columns like Цена-4, Цена 4, -4, Цена-3, Цена 3, -3, Спец прайс
-        target_names = [
-            "цена-4", "цена 4", "цена - 4", "-4", "-4%", 
-            "цена-3", "цена 3", "цена - 3", "-3", "-3%", 
-            "цена-2", "цена 2", "цена - 2", "-2", "-2%", 
-            "100%", "цена 100%", "спец прайс", "спец. прайс", "спецпрайс",
-            "спец цена", "спец. цена", "спеццена", "цена спец", "цена со скидкой"
-        ]
+        # First check for explicit columns like Цена-4, Цена 4, -4, Цена-3, Цена 3, -3
+        target_names = ["цена-4", "цена 4", "цена - 4", "-4", "цена-3", "цена 3", "цена - 3", "-3", "цена-2", "цена 2", "цена - 2", "-2"]
         for target in target_names:
             for col in df.columns:
                 c_norm = str(col).lower().replace("–", "-").replace("—", "-").replace("−", "-").strip()
-                if c_norm == target or c_norm.replace(" ", "") == target.replace(" ", "") or target in c_norm:
+                if c_norm == target or c_norm.replace(" ", "") == target.replace(" ", ""):
                     found_col = col
                     break
             if found_col:

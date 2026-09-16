@@ -332,13 +332,14 @@ async def collect_latest_files(
 
                 score = 100.0
                 
-                # Бонус за регионы
-                if has_fergana:
+                # Бонус за регионы: Ташкент -> Самарканд -> Фергана (без начисления баллов)
+                if has_tashkent:
                     score += 50.0
-                elif has_tashkent:
-                    score += 20.0
                 elif has_samarkand:
-                    score += 15.0
+                    score += 30.0
+                elif has_fergana:
+                    # Без начисления баллов за Фергану, но не штрафуем
+                    score += 0.0
                 elif not is_biotek:
                     score -= 70.0
 
@@ -361,14 +362,11 @@ async def collect_latest_files(
                         score += 30.0
                         break
                         
-                main_keywords = ["прайс", "price", "основной", "main", "спец"]
+                main_keywords = ["прайс", "price", "основной", "main"]
                 for kw in main_keywords:
-                    if kw in lower_filename or kw in caption_text.lower():
+                    if kw in lower_filename:
                         score += 20.0
                         break
-
-                if is_biotek and any(kw in lower_filename or kw in caption_text.lower() for kw in ["спец", "спецпрайс", "спец прайс"]):
-                    score += 50.0
                 
                 # 2. Извлечение даты из имени файла (например, 25.08.2026, 25,08,2026, 25_08_2026, 25.08)
                 date_match = re.search(r"(\d{1,2})[.,_](\d{1,2})(?:[.,_](\d{2,4}))?", filename)
@@ -386,9 +384,14 @@ async def collect_latest_files(
                         
                 # 3. Решающий вес фактора свежести времени сообщения (1 день = 100 баллов)
                 score += (message.date.timestamp() / 864.0)
-                region_tag = "tashkent"
-                if is_meros and has_samarkand and not has_tashkent:
+                if has_tashkent:
+                    region_tag = "tashkent"
+                elif has_samarkand:
                     region_tag = "samarkand"
+                elif has_fergana:
+                    region_tag = "fergana"
+                else:
+                    region_tag = "other"
                 candidates.append((score, message, region_tag))
                 
             if not candidates:
@@ -398,6 +401,7 @@ async def collect_latest_files(
             if is_meros:
                 tashkent_cands = [c for c in candidates if c[2] == "tashkent"]
                 samarkand_cands = [c for c in candidates if c[2] == "samarkand"]
+                fergana_cands = [c for c in candidates if c[2] == "fergana"]
                 if tashkent_cands:
                     tashkent_cands.sort(key=lambda x: x[0], reverse=True)
                     best_score, best_message, _ = tashkent_cands[0]
@@ -406,6 +410,10 @@ async def collect_latest_files(
                     samarkand_cands.sort(key=lambda x: x[0], reverse=True)
                     best_score, best_message, _ = samarkand_cands[0]
                     logger.info(f"Tashkent price list absent for Meros Pharm. Falling back to Samarkand price list: {best_message.document.file_name}")
+                elif fergana_cands:
+                    fergana_cands.sort(key=lambda x: x[0], reverse=True)
+                    best_score, best_message, _ = fergana_cands[0]
+                    logger.info(f"Tashkent and Samarkand absent for Meros Pharm. Falling back to Fergana price list: {best_message.document.file_name}")
                 else:
                     candidates.sort(key=lambda x: x[0], reverse=True)
                     best_score, best_message, _ = candidates[0]
@@ -454,11 +462,6 @@ async def collect_latest_files(
                 )
                 await edit_telegram_message(chat_id, message_id, final_msg)
             success = await trigger_aggregation_task(uploaded_ids)
-            if not success:
-                err_msg = "❌ <b>Ошибка при запуске задачи агрегации на сервере.</b>"
-                if chat_id and message_id:
-                    await edit_telegram_message(chat_id, message_id, err_msg)
-                await send_scout_telegram_report(err_msg)
         else:
             logger.info(f"Successfully collected and uploaded {len(uploaded_ids)} files (download-only). Sending Telegram report...")
             success = True
@@ -659,13 +662,13 @@ async def main():
     await app.start()
     logger.info("Scout Agent is logged in and running.")
     
-    scheduler = AsyncIOScheduler()
+    scheduler = AsyncIOScheduler(timezone="Asia/Tashkent")
     if config.DEMAND_BOT_USERNAME:
-        cron_trigger = CronTrigger.from_crontab(config.DEMAND_BOT_TRIGGER_CRON)
+        cron_trigger = CronTrigger.from_crontab(config.DEMAND_BOT_TRIGGER_CRON, timezone="Asia/Tashkent")
         scheduler.add_job(run_collect_flow, cron_trigger)
         logger.info(
             f"Scheduled collection flow (including bot request to @{config.DEMAND_BOT_USERNAME}) "
-            f"with cron: '{config.DEMAND_BOT_TRIGGER_CRON}'"
+            f"with cron: '{config.DEMAND_BOT_TRIGGER_CRON}' (Asia/Tashkent)"
         )
     scheduler.start()
     

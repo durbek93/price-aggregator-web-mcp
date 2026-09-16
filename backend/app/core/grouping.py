@@ -257,6 +257,8 @@ def is_materia_producer_norm(text_norm: str) -> bool:
     if not text_norm:
         return False
     t = text_norm.replace("-", " ").replace("/", " ")
+    if any(x in t for x in ["salomatlik", "kelajak", "сдк", "sdk"]):
+        return False
     if "материа" in t or "материя" in t or "materia" in t:
         return True
     return False
@@ -366,6 +368,9 @@ def match_canonical(
     legacy_priority_rules: bool = True,
 ) -> Optional[str]:
     """По нормализованному названию возвращает каноническое или None."""
+    if re.search(r'(?:^|[\s\-_/(\[])(?:сдк|sdk)(?:$|[\s\-_/)\]])', name_norm):
+        return None
+
     if legacy_priority_rules:
         if "эргоферон" in name_norm or "ergoferon" in name_norm:
             return "Эргоферон таб №20"
@@ -408,11 +413,19 @@ def match_canonical(
     return None
 
 
-def is_excluded_product(name: str) -> bool:
+def is_excluded_product(name: str, producer: Optional[str] = None) -> bool:
     """Проверяет, должен ли товар быть исключен из сводного прайса."""
     if not name:
         return False
     norm_name = " ".join(str(name).lower().split())
+    if re.search(r'(?:^|[\s\-_/(\[])(?:сдк|sdk)(?:$|[\s\-_/)\]])', norm_name):
+        return True
+    if producer:
+        norm_prod = " ".join(str(producer).lower().split())
+        if any(x in norm_prod for x in ["salomatlik", "kelajak", "diyor kelajak"]):
+            return True
+        if re.search(r'(?:^|[\s\-_/(\[])(?:сдк|sdk)(?:$|[\s\-_/)\]])', norm_prod):
+            return True
     for pattern in [
         "лейкопластырь на тканевой основе 1х250см №1",
         "лейкопластырь на тканевой основе 1х250см n1",

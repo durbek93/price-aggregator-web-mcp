@@ -9,6 +9,7 @@ import uvicorn
 from fastapi import FastAPI, BackgroundTasks, Header, HTTPException
 from pydantic import BaseModel
 from aiogram import Bot, Dispatcher, html, F
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, Message, CallbackQuery
 from aiogram.filters import Command
 
@@ -16,6 +17,7 @@ import config
 from auditor import audit_svodny_price, find_latest_svodny, AuditReport
 from healer import diagnose_and_propose_fix, ProposedFix
 from api_client import save_distributor_rule, trigger_rerun_pipeline, wait_for_task_completion
+from dialog_agent import answer_user_query
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,13 +25,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger("debugger_agent")
 
-bot = Bot(token=config.DEBUGGER_BOT_TOKEN) if config.DEBUGGER_BOT_TOKEN else None
+bot_session = AiohttpSession(timeout=120.0)
+bot = Bot(token=config.DEBUGGER_BOT_TOKEN, session=bot_session) if config.DEBUGGER_BOT_TOKEN else None
 dp = Dispatcher()
 
 app = FastAPI(title="Debugger Agent Service")
 
 # In-memory store for active proposed fixes waiting for confirmation
 ACTIVE_FIXES: Dict[str, ProposedFix] = {}
+PIPELINE_LOCK = asyncio.Lock()
 
 
 class FixActionRequest(BaseModel):
@@ -43,6 +47,9 @@ def get_fix_keyboard(fix_id: str) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="✅ Применить и пересобрать", callback_data=f"apply_fix:{fix_id}"),
             InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_fix:{fix_id}"),
+        ],
+        [
+            InlineKeyboardButton(text="🙈 Игнорировать", callback_data=f"ignore_fix:{fix_id}"),
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=kb)
@@ -77,22 +84,26 @@ async def send_discrepancy_alert(fix: ProposedFix, target_chat_id: int) -> None:
         logger.error(f"Failed to send discrepancy alert to {target_chat_id}: {ex}")
 
 
-async def perform_full_audit(target_chat_id: Optional[int] = None) -> AuditReport:
+class AuditTriggerRequest(BaseModel):
+    scope: Optional[str] = "republic"
+
+
+async def perform_full_audit(target_chat_id: Optional[int] = None, scope: str = "republic") -> AuditReport:
     """Runs full audit and triggers healing diagnosis if discrepancies are found."""
-    latest_svodny = find_latest_svodny(config.OUTPUT_DIR)
+    latest_svodny = find_latest_svodny(config.OUTPUT_DIR, scope=scope)
     chat_id = target_chat_id or config.TELEGRAM_GROUP_ID or (config.ALLOWED_TELEGRAM_IDS[0] if config.ALLOWED_TELEGRAM_IDS else None)
 
     if not latest_svodny:
-        logger.warning("No svodny price file found to audit.")
+        logger.warning(f"No svodny price file found to audit (scope={scope}).")
         if chat_id and bot:
             try:
-                await bot.send_message(chat_id, "ℹ️ Файлы сводного прайса не найдены для аудита.")
+                await bot.send_message(chat_id, f"ℹ️ Файлы сводного прайса не найдены для аудита (scope={scope}).")
             except Exception:
                 pass
         return AuditReport(svodny_filepath=Path(), is_valid=False, summary_text="Файлы не найдены")
 
-    logger.info(f"Auditing svodny file: {latest_svodny.name}")
-    report = audit_svodny_price(latest_svodny, config.UPLOAD_DIR)
+    logger.info(f"Auditing svodny file: {latest_svodny.name} (scope={scope})")
+    report = audit_svodny_price(latest_svodny, config.UPLOAD_DIR, scope=scope)
 
     if report.is_valid:
         logger.info(report.summary_text)
@@ -162,8 +173,11 @@ async def bot_audit_command(message: Message):
         await message.answer("⛔ У вас нет прав для запуска аудита.")
         return
 
-    await message.answer("🔎 <b>Запускаю аудит сводного прайса по препаратам Материя Медика...</b>", parse_mode="HTML")
-    await perform_full_audit(target_chat_id=message.chat.id)
+    cmd_text = (message.text or "").lower()
+    scope = "fergana" if any(w in cmd_text for w in ["ферган", "долин", "фергана"]) else "republic"
+    scope_desc = " (Ферганская долина)" if scope == "fergana" else " (Республика)"
+    await message.answer(f"🔎 <b>Запускаю аудит сводного прайса по препаратам Материя Медика{scope_desc}...</b>", parse_mode="HTML")
+    await perform_full_audit(target_chat_id=message.chat.id, scope=scope)
 
 
 @dp.message(Command("status"))
@@ -211,6 +225,106 @@ async def callback_reject_fix_handler(callback: CallbackQuery):
     await execute_reject_fix(req)
 
 
+@dp.callback_query(F.data.startswith("ignore_fix:"))
+async def callback_ignore_fix_handler(callback: CallbackQuery):
+    """Игнорирует замечание аудитора без внесения изменений в правила и без пересборки."""
+    if not is_authorized(callback.from_user.id if callback.from_user else 0, callback.message.chat.id if callback.message else None):
+        await callback.answer("⛔ Недостаточно прав для игнорирования замечания!", show_alert=True)
+        return
+
+    fix_id = callback.data.split(":", 1)[1]
+    if callback.message:
+        await callback.message.edit_reply_markup(reply_markup=None)
+        try:
+            await callback.message.reply("🙈 <i>Замечание проигнорировано администратором. Изменения не вносились.</i>", parse_mode="HTML")
+        except Exception:
+            pass
+    await callback.answer("Замечание проигнорировано.")
+    ACTIVE_FIXES.pop(fix_id, None)
+
+
+@dp.message()
+async def bot_conversational_handler(message: Message):
+    """Processes interactive user questions and natural commands using Gemini agent."""
+    text = (message.text or message.caption or "").strip()
+    if not text or not bot:
+        return
+
+    text_low = text.lower()
+    is_private = message.chat.type == "private"
+
+    bot_info = await bot.get_me()
+    bot_username = (bot_info.username or "lightyak_auditor_bot").lower()
+    bot_mention = f"@{bot_username}"
+
+    # If message is explicitly addressed to another bot (e.g. @lightprice_analyst_bot), ignore
+    if "@" in text_low:
+        words_with_at = [w for w in text_low.split() if "@" in w]
+        if any(w.startswith("@") and not w.startswith(bot_mention) for w in words_with_at):
+            if bot_mention not in text_low:
+                return
+
+    is_reply_to_me = bool(
+        message.reply_to_message and 
+        message.reply_to_message.from_user and 
+        message.reply_to_message.from_user.id == bot_info.id
+    )
+
+    is_mentioned = (
+        bot_mention in text_low or
+        text_low.startswith(("аудитор,", "аудитор ", "аудитор\n", "аудитор:", "отладчик,", "отладчик ", "отладчик\n", "отладчик:")) or
+        " аудитор," in text_low or
+        " аудитор " in text_low or
+        " аудитор\n" in text_low or
+        " аудитор:" in text_low or
+        " отладчик," in text_low or
+        " отладчик " in text_low or
+        " отладчик\n" in text_low or
+        " отладчик:" in text_low
+    )
+
+    if not (is_private or is_reply_to_me or is_mentioned):
+        return
+
+    if not is_authorized(message.from_user.id if message.from_user else 0, message.chat.id):
+        await message.reply("⛔ У вас нет доступа к управлению Агентом-Аудитором.")
+        return
+
+    # Clean leading trigger word if present
+    cleaned_text = text
+    for prefix in [bot_mention, "аудитор,", "аудитор:", "аудитор", "отладчик,", "отладчик:", "отладчик"]:
+        if cleaned_text.lower().startswith(prefix):
+            cleaned_text = cleaned_text[len(prefix):].strip()
+            break
+
+    replied_text = None
+    if message.reply_to_message:
+        replied_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+
+    try:
+        await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+    except Exception:
+        pass
+
+    answer = await answer_user_query(
+        user_message=cleaned_text or text,
+        replied_message_text=replied_text
+    )
+
+    if len(answer) <= 4000:
+        try:
+            await message.reply(answer, parse_mode="HTML")
+        except Exception:
+            await message.reply(answer)
+    else:
+        chunks = [answer[i:i+3900] for i in range(0, len(answer), 3900)]
+        for chunk in chunks:
+            try:
+                await message.reply(chunk, parse_mode="HTML")
+            except Exception:
+                await message.reply(chunk)
+
+
 # --- Core Fix Execution Logic ---
 
 async def execute_apply_fix(req: FixActionRequest) -> Dict[str, Any]:
@@ -234,42 +348,43 @@ async def execute_apply_fix(req: FixActionRequest) -> Dict[str, Any]:
     # 1. Save rule
     save_distributor_rule(fix.distributor_key, fix.proposed_rule)
 
-    # 2. Trigger pipeline re-run
-    task_id = await trigger_rerun_pipeline()
-    if not task_id:
-        if chat_id and bot:
-            await bot.send_message(chat_id, "❌ Ошибка при запуске задачи пересборки в бэкенде.")
-        return {"status": "error", "message": "Failed to trigger backend pipeline"}
+    async with PIPELINE_LOCK:
+        # 2. Trigger pipeline re-run
+        task_id = await trigger_rerun_pipeline()
+        if not task_id:
+            if chat_id and bot:
+                await bot.send_message(chat_id, "❌ Ошибка при запуске задачи пересборки в бэкенде.")
+            return {"status": "error", "message": "Failed to trigger backend pipeline"}
 
-    # 3. Wait for completion
-    success = await wait_for_task_completion(task_id, timeout_sec=180)
-    if not success:
-        if chat_id and bot:
-            await bot.send_message(chat_id, "❌ Ошибка: пересборка завершилась сбоем.")
-        return {"status": "error", "message": "Pipeline execution failed"}
+        # 3. Wait for completion
+        success = await wait_for_task_completion(task_id, timeout_sec=180)
+        if not success:
+            if chat_id and bot:
+                await bot.send_message(chat_id, "❌ Ошибка: пересборка завершилась сбоем.")
+            return {"status": "error", "message": "Pipeline execution failed"}
 
-    # 4. Re-audit and send updated file
-    latest_svodny = find_latest_svodny(config.OUTPUT_DIR)
-    if latest_svodny and latest_svodny.exists() and chat_id and bot:
-        new_report = audit_svodny_price(latest_svodny, config.UPLOAD_DIR)
-        doc = FSInputFile(str(latest_svodny))
-        status_line = "✅ <b>Все препараты Материя Медика проверены, ошибок нет!</b>" if new_report.is_valid else "⚠️ Пересборка завершена, но остаются замечания."
-        
-        try:
-            await bot.send_document(
-                chat_id=chat_id,
-                document=doc,
-                caption=(
-                    f"🎉 <b>Сводный прайс успешно пересобран и обновлен!</b>\n\n"
-                    f"Правило для <b>{fix.distributor_label}</b> сохранено:\n"
-                    f"• Базовая 25%: <code>{fix.proposed_rule.get('p25_col')}</code>\n"
-                    f"• Со скидкой 100%: <code>{fix.proposed_rule.get('p100_col')}</code>\n\n"
-                    f"{status_line}"
-                ),
-                parse_mode="HTML"
-            )
-        except Exception as e:
-            logger.error(f"Error sending document to {chat_id}: {e}")
+        # 4. Re-audit and send updated file
+        latest_svodny = find_latest_svodny(config.OUTPUT_DIR)
+        if latest_svodny and latest_svodny.exists() and chat_id and bot:
+            new_report = audit_svodny_price(latest_svodny, config.UPLOAD_DIR)
+            doc = FSInputFile(str(latest_svodny))
+            status_line = "✅ <b>Все препараты Материя Медика проверены, ошибок нет!</b>" if new_report.is_valid else "⚠️ Пересборка завершена, но остаются замечания."
+            
+            try:
+                await bot.send_document(
+                    chat_id=chat_id,
+                    document=doc,
+                    caption=(
+                        f"🎉 <b>Сводный прайс успешно пересобран и обновлен!</b>\n\n"
+                        f"Правило для <b>{fix.distributor_label}</b> сохранено:\n"
+                        f"• Базовая 25%: <code>{fix.proposed_rule.get('p25_col')}</code>\n"
+                        f"• Со скидкой 100%: <code>{fix.proposed_rule.get('p100_col')}</code>\n\n"
+                        f"{status_line}"
+                    ),
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                logger.error(f"Error sending document to {chat_id}: {e}")
 
     ACTIVE_FIXES.pop(req.fix_id, None)
     return {"status": "ok", "message": "Fix applied and pipeline re-run successfully"}
@@ -292,12 +407,14 @@ async def execute_reject_fix(req: FixActionRequest) -> Dict[str, Any]:
 @app.post("/audit")
 async def api_trigger_audit(
     background_tasks: BackgroundTasks,
+    req: Optional[AuditTriggerRequest] = None,
     x_internal_key: Optional[str] = Header(None, alias="X-Internal-Key")
 ):
     """Webhook triggered after a svodny task finishes."""
     verify_internal_key(x_internal_key)
-    background_tasks.add_task(perform_full_audit)
-    return {"status": "ok", "message": "Audit started in background"}
+    scope = req.scope if req and req.scope else "republic"
+    background_tasks.add_task(perform_full_audit, target_chat_id=None, scope=scope)
+    return {"status": "ok", "message": f"Audit started in background (scope={scope})"}
 
 
 @app.post("/apply_fix")

@@ -72,9 +72,9 @@ def classify_preparation(raw_name: str) -> Optional[str]:
         return None
 
     if "анаферон" in n:
-        if "капл" in n:
+        if any(k in n for k in ["капл", "кап.", "кап ", "кап/", "капли", "капель", "25мл", "25 мл", "25ml", "25 ml"]) or ("кап" in n and not any(t in n for t in ["таб", "табл", "таблет"])):
             return "Анаферон детский капли"
-        if "дет" in n:
+        if any(k in n for k in ["дет", "д/дет", "д/д", "для дет", "для детей", "bolalar", "child"]):
             return "Анаферон детский"
         return None
 
@@ -85,7 +85,7 @@ def classify_preparation(raw_name: str) -> Optional[str]:
         return "Ренгалин"
 
     if "тенотен" in n:
-        if "дет" in n:
+        if any(k in n for k in ["дет", "д/дет", "д/д", "для дет", "для детей", "bolalar", "child"]):
             return "Тенотен детский"
         return "Тенотен"
 

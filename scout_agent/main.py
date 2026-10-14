@@ -32,6 +32,7 @@ app = Client(
 )
 
 from api_client import upload_file_to_backend, trigger_aggregation_task
+from fergana_collector import collect_fergana_files
 
 def clean_distributor_name(title: str) -> str:
     """Очищает имя канала от региональных и служебных слов."""
@@ -565,6 +566,20 @@ async def handle_http_request(reader, writer):
             response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 22\r\n\r\n{\"status\":\"initiated\"}"
             writer.write(response.encode())
             await writer.drain()
+        elif method == "POST" and path == "/collect_fergana":
+            logger.info(f"Received HTTP /collect_fergana request (chat_id={chat_id}, message_id={message_id}). Starting Fergana collection flow...")
+            asyncio.create_task(run_fergana_collect_flow(trigger_aggregation=True, chat_id=chat_id, message_id=message_id))
+            
+            response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 22\r\n\r\n{\"status\":\"initiated\"}"
+            writer.write(response.encode())
+            await writer.drain()
+        elif method == "POST" and path == "/fetch_fergana":
+            logger.info(f"Received HTTP /fetch_fergana request (chat_id={chat_id}, message_id={message_id}). Starting Fergana fetch-only flow...")
+            asyncio.create_task(run_fergana_collect_flow(trigger_aggregation=False, chat_id=chat_id, message_id=message_id))
+            
+            response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 22\r\n\r\n{\"status\":\"initiated\"}"
+            writer.write(response.encode())
+            await writer.drain()
         else:
             response = "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 25\r\n\r\n{\"error\":\"Not Found\"}"
             writer.write(response.encode())
@@ -647,6 +662,16 @@ async def run_collect_flow(
         message_id=message_id
     )
 
+async def run_fergana_collect_flow(trigger_aggregation: bool = True, chat_id: Optional[int] = None, message_id: Optional[int] = None):
+    """Сбор прайс-листов местных оптовиков Ферганской долины."""
+    logger.info("Executing run_fergana_collect_flow...")
+    await collect_fergana_files(
+        app=app,
+        trigger_aggregation=trigger_aggregation,
+        chat_id=chat_id,
+        message_id=message_id
+    )
+
 async def main():
     logger.info("Starting Scout Agent (userbot)...")
     
@@ -670,6 +695,12 @@ async def main():
             f"Scheduled collection flow (including bot request to @{config.DEMAND_BOT_USERNAME}) "
             f"with cron: '{config.DEMAND_BOT_TRIGGER_CRON}' (Asia/Tashkent)"
         )
+
+    # Расписание для оптовиков Ферганской долины: каждый день в 14:00 (Asia/Tashkent)
+    fergana_trigger = CronTrigger.from_crontab("0 14 * * *", timezone="Asia/Tashkent")
+    scheduler.add_job(run_fergana_collect_flow, fergana_trigger)
+    logger.info("Scheduled Fergana Valley collection flow with cron: '0 14 * * *' (Asia/Tashkent)")
+
     scheduler.start()
     
     logger.info("Starting HTTP Server on port 8080...")

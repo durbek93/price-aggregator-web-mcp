@@ -63,6 +63,9 @@ def _column_lists(settings_dict: Dict[str, Any]) -> Tuple[list, list, list, list
 def _display_label(entry_display: str, filename: str) -> str:
     d = (entry_display or "").strip()
     if d:
+        for ext in [".xlsx", ".xls", ".XLSX", ".XLS"]:
+            if d.endswith(ext):
+                d = d[:-len(ext)].strip()
         return d
     return friendly_source_label(Path(filename).stem)
 
@@ -96,10 +99,26 @@ def _extract_matrix_rows(
     if not valid_entries:
         raise ValueError("Нет файлов прайсов на сервере. Пожалуйста, загрузите прайсы.")
 
+    # Дедупликация: если для одного дистрибьютора есть несколько файлов (например, .xls и .xlsx), берем самый свежий
+    dist_map: Dict[str, Dict[str, Any]] = {}
+    for e in valid_entries:
+        filepath = upload_dir / e["filename"]
+        lbl = _display_label(e.get("display_name", ""), e["filename"])
+        mtime = filepath.stat().st_mtime if filepath.exists() else 0
+        if lbl in dist_map:
+            ex_path = upload_dir / dist_map[lbl]["filename"]
+            ex_mtime = ex_path.stat().st_mtime if ex_path.exists() else 0
+            if mtime > ex_mtime:
+                dist_map[lbl] = e
+        else:
+            dist_map[lbl] = e
+
+    deduped_entries = list(dist_map.values())
+
     all_labels: List[str] = []
     extracted: List[dict] = []
-    total = len(valid_entries)
-    for i, e in enumerate(valid_entries, 1):
+    total = len(deduped_entries)
+    for i, e in enumerate(deduped_entries, 1):
         path = upload_dir / e["filename"]
         if progress:
             progress(f"Обработка [{i}/{total}]: {path.name}")
@@ -124,7 +143,7 @@ def _extract_matrix_rows(
                 price_c,
                 stock_c,
                 prod_c,
-                catalog_list if use_catalog_matching else [],
+                catalog_list,
                 source_label=lbl,
                 producer_substrings=producers,
                 legacy_priority_rules=legacy_priority_rules,
@@ -159,7 +178,7 @@ def _save_matrix(df: pd.DataFrame, out: Path, vertical: bool) -> Path:
 
 def pick_price_columns(columns: List[str], candidates: List[str]) -> Tuple[Optional[str], Optional[str]]:
     local_candidates = list(candidates)
-    for extra in ["Продажная", "Продажная цена", "Продажная с НДС", "При 100% Оплате", "Цена договорная"]:
+    for extra in ["Продажная", "Продажная цена", "Продажная с НДС", "При 100% Оплате", "Цена договорная", "Отпускная цена с НДС", "Отпускная цена", "Отп. цена с НДС"]:
         if extra not in local_candidates:
             local_candidates.append(extra)
             
@@ -332,8 +351,12 @@ def match_product_to_template(product_name: str, template_products: List[Tuple[i
 
     # 1. Anaferon
     if "анаферон" in p_norm_clean or "анаферон" in orig_norm_clean:
-        is_drops = contains_any(p_norm_clean, ["капл", "25мл", "25 мл"]) or contains_any(orig_norm_clean, ["капл", "25мл", "25 мл"])
-        is_child = contains_any(p_norm_clean, ["детс", "дет"]) or contains_any(orig_norm_clean, ["детс", "дет"])
+        is_drops = (
+            contains_any(p_norm_clean, ["капл", "кап.", "кап ", "кап/", "кап-", "капли", "капель", "25мл", "25 мл", "25ml", "25 ml"]) or
+            contains_any(orig_norm_clean, ["капл", "кап.", "кап ", "кап/", "кап-", "капли", "капель", "25мл", "25 мл", "25ml", "25 ml"]) or
+            (("кап" in p_norm_clean or "кап" in orig_norm_clean) and not ("таб" in p_norm_clean or "таб" in orig_norm_clean))
+        )
+        is_child = contains_any(p_norm_clean, ["детс", "дет", "д/дет", "д/д", "для дет", "для детей", "bolalar", "child"]) or contains_any(orig_norm_clean, ["детс", "дет", "д/дет", "д/д", "для дет", "для детей", "bolalar", "child"])
         
         if is_drops:
             for row_idx, t_name in template_products:
@@ -353,7 +376,7 @@ def match_product_to_template(product_name: str, template_products: List[Tuple[i
 
     # 2. Tenoten
     if "тенотен" in p_norm_clean or "тенотен" in orig_norm_clean:
-        is_child = contains_any(p_norm_clean, ["детс", "дет"]) or contains_any(orig_norm_clean, ["детс", "дет"])
+        is_child = contains_any(p_norm_clean, ["детс", "дет", "д/дет", "д/д", "для дет", "для детей", "bolalar", "child"]) or contains_any(orig_norm_clean, ["детс", "дет", "д/дет", "д/д", "для дет", "для детей", "bolalar", "child"])
         if is_child:
             for row_idx, t_name in template_products:
                 t_low = t_name.lower()
@@ -367,7 +390,7 @@ def match_product_to_template(product_name: str, template_products: List[Tuple[i
 
     # 3. Rengalin
     if "ренгалин" in p_norm_clean or "ренгалин" in orig_norm_clean:
-        is_sol = contains_any(p_norm_clean, ["раствор", "р-р", "100мл", "100 мл", "сироп"]) or contains_any(orig_norm_clean, ["раствор", "р-р", "100мл", "100 мл", "сироп"])
+        is_sol = contains_any(p_norm_clean, ["раствор", "р-р", "р-р.д/вн", "д/вн", "100мл", "100 мл", "сироп", "100"]) or contains_any(orig_norm_clean, ["раствор", "р-р", "р-р.д/вн", "д/вн", "100мл", "100 мл", "сироп", "100"])
         if is_sol:
             for row_idx, t_name in template_products:
                 t_low = t_name.lower()
@@ -407,42 +430,35 @@ def match_product_to_template(product_name: str, template_products: List[Tuple[i
             if "колофорт" in t_low:
                 return row_idx
 
-    # 7. Afalaza
-    if "афалаза" in p_norm_clean or "афалаза" in orig_norm_clean:
-        for row_idx, t_name in template_products:
-            t_low = t_name.lower()
-            if "афалаза" in t_low:
-                return row_idx
-
-    # 8. Afala
+    # 7. Afala (Афалаза исключена)
     if ("афала" in p_norm_clean or "афала" in orig_norm_clean) and "афалаза" not in p_norm_clean and "афалаза" not in orig_norm_clean:
         for row_idx, t_name in template_products:
             t_low = t_name.lower()
             if "афала" in t_low and "афалаза" not in t_low:
                 return row_idx
 
-    # 9. Impaza
+    # 8. Impaza
     if "импаза" in p_norm_clean or "импаза" in orig_norm_clean:
         for row_idx, t_name in template_products:
             t_low = t_name.lower()
             if "импаза" in t_low:
                 return row_idx
 
-    # 10. Mlekoin
+    # 9. Mlekoin
     if "млекоин" in p_norm_clean or "млекоин" in orig_norm_clean:
         for row_idx, t_name in template_products:
             t_low = t_name.lower()
             if "млекоин" in t_low:
                 return row_idx
 
-    # 11. Uspokoy
+    # 10. Uspokoy
     if "успокой" in p_norm_clean or "успокой" in orig_norm_clean:
         for row_idx, t_name in template_products:
             t_low = t_name.lower()
             if "успокой" in t_low:
                 return row_idx
 
-    # 12. Faringomed
+    # 11. Faringomed
     if "фарингомед" in p_norm_clean or "фарингомед" in orig_norm_clean:
         for row_idx, t_name in template_products:
             t_low = t_name.lower()
@@ -480,6 +496,10 @@ FONT_GREEN = Font(color="375623", bold=True)
 
 FILL_RED = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
 FONT_RED = Font(color="C65911", bold=True)
+
+FILL_DISAPPEARED = PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid")
+FILL_APPEARED = PatternFill(start_color="DDEBF7", end_color="DDEBF7", fill_type="solid")
+FONT_APPEARED = Font(color="000000", bold=True)
 
 
 def _load_previous_svodny_prices(output_dir: Path, exclude_filename: str = "") -> Dict[Tuple[int, int], float]:
@@ -570,6 +590,12 @@ def _set_price_cell(sheet, row: int, col: int, price_to_put: float, prev_prices:
             cell.fill = FILL_GREEN
             cell.font = FONT_GREEN
             return
+    elif prev_prices:
+        # Если есть предыдущий прайс-лист, но эта позиция ранее отсутствовала у данного дистрибьютора -> НОВИНКА / ПОЯВИЛАСЬ
+        cell.value = rounded_price
+        cell.fill = FILL_APPEARED
+        cell.font = FONT_APPEARED
+        return
 
     cell.value = rounded_price
 
@@ -709,12 +735,10 @@ def run_svodny_horizontal(
                 matched_name = _find_matching_col(rule.get("name_col"), list(df_file.columns))
                 if matched_name:
                     name_col = matched_name
-                matched_p25 = _find_matching_col(rule.get("p25_col"), list(df_file.columns))
-                if matched_p25:
-                    p25_col = matched_p25
-                matched_p100 = _find_matching_col(rule.get("p100_col"), list(df_file.columns))
-                if matched_p100:
-                    p100_col = matched_p100
+                if "p25_col" in rule:
+                    p25_col = _find_matching_col(rule.get("p25_col"), list(df_file.columns)) if rule.get("p25_col") else None
+                if "p100_col" in rule:
+                    p100_col = _find_matching_col(rule.get("p100_col"), list(df_file.columns)) if rule.get("p100_col") else None
 
             if "meros" in path.name.lower() or "мерос" in path.name.lower() or "meros" in lbl.lower() or "мерос" in lbl.lower():
                 # For Meros Pharm: ensure p100_col and p25_col are resolved correctly
@@ -773,36 +797,42 @@ def run_svodny_horizontal(
                 for col, col_clean in price_cols_list:
                     # Exclude dosage volume like "100мл", "100 мг", "25мл"
                     col_clean_no_dosage = col_clean.replace("мл", "").replace("мг", "").replace("таб", "").replace("кап", "")
-                    if "100" in col_clean_no_dosage:
+                    if "100" in col_clean_no_dosage or col_clean in ["1", "1.0"]:
                         col_100_found = col
                         is_100 = True
                     elif "25" in col_clean_no_dosage:
                         col_25_found = col
                         is_25 = True
                         
-                p25_col = None
-                p100_col = None
-                
-                if col_100_found and col_25_found:
-                    p100_col = col_100_found
-                    p25_col = col_25_found
-                elif is_100:
-                    # Parse as 100% file
-                    p100_col = col_100_found
-                    if not p100_col:
-                        valid_cols = [c for c, _ in price_cols_list]
-                        p100_col = pick_price_column(valid_cols, price_c)
-                else:
-                    # Parse as 25% file
-                    p25_col = col_25_found
-                    if not p25_col:
-                        for col, col_clean in price_cols_list:
-                            if any(x in col_clean for x in ["отпускная цена с ндс", "отпуск.цена с ндс", "отпускная цена", "отпуск.цена", "отп. цена", "отп.цена"]):
-                                p25_col = col
-                                break
-                    if not p25_col:
-                        valid_cols = [c for c, _ in price_cols_list]
-                        p25_col = pick_price_column(valid_cols, price_c)
+                if not (rule and (p100_col is not None or p25_col is not None)):
+                    p25_col = None
+                    p100_col = None
+                    
+                    if col_100_found and col_25_found:
+                        p100_col = col_100_found
+                        p25_col = col_25_found
+                    elif is_100:
+                        # Parse as 100% file
+                        p100_col = col_100_found
+                        if not p100_col:
+                            for col, col_clean in price_cols_list:
+                                if col_clean in ["1", "1.0", "100%", "цена 100%", "отпускная цена с ндс", "отпускная цена"]:
+                                    p100_col = col
+                                    break
+                        if not p100_col:
+                            valid_cols = [c for c, _ in price_cols_list]
+                            p100_col = pick_price_column(valid_cols, price_c)
+                    else:
+                        # Parse as 25% file
+                        p25_col = col_25_found
+                        if not p25_col:
+                            for col, col_clean in price_cols_list:
+                                if any(x in col_clean for x in ["отпускная цена с ндс", "отпуск.цена с ндс", "отпускная цена", "отпуск.цена", "отп. цена", "отп.цена"]):
+                                    p25_col = col
+                                    break
+                        if not p25_col:
+                            valid_cols = [c for c, _ in price_cols_list]
+                            p25_col = pick_price_column(valid_cols, price_c)
             elif "luxe" in path.name.lower() or "люкс" in path.name.lower():
                 # For Pharm Luxe, filename-based extraction
                 p100_col = None
@@ -815,55 +845,57 @@ def run_svodny_horizontal(
                 else:
                     p25_col, p100_col = pick_price_columns(list(df_file.columns), price_c)
             elif "biotek" in path.name.lower() or "биотек" in path.name.lower() or "biotek" in lbl.lower() or "биотек" in lbl.lower():
-                # For Biotek Pharm
-                raw_cols = list(df_file.columns)
-                name_col_idx = raw_cols.index(name_col) if name_col in raw_cols else None
+                # If rule explicitly configured and resolved columns for biotek, use it; otherwise fallback to heuristics
+                if not (rule and (p100_col is not None or p25_col is not None)):
+                    raw_cols = list(df_file.columns)
+                    name_col_idx = raw_cols.index(name_col) if name_col in raw_cols else None
 
-                # Look for explicit discount columns
-                explicit_100_col = None
-                explicit_25_col = None
-                for col in raw_cols:
-                    c_clean = str(col).strip().lower().replace("–", "-").replace("—", "-").replace("−", "-")
-                    if any(c_clean == t or c_clean.replace(" ", "") == t.replace(" ", "") for t in ["цена-4", "цена 4", "цена - 4", "-4", "-4%", "цена-3", "цена 3", "цена - 3", "-3", "-3%", "цена-2", "цена 2", "цена - 2", "-2", "-2%", "100%", "цена 100%"]):
-                        explicit_100_col = col
-                    if c_clean in ["цена", "базовая цена", "отпускная цена", "отп.цена", "цена без скидки"]:
-                        if not explicit_25_col:
-                            explicit_25_col = col
+                    # Look for explicit discount columns
+                    explicit_100_col = None
+                    explicit_25_col = None
+                    for col in raw_cols:
+                        c_clean = str(col).strip().lower().replace("–", "-").replace("—", "-").replace("−", "-")
+                        if any(c_clean == t or c_clean.replace(" ", "") == t.replace(" ", "") for t in ["цена-4", "цена 4", "цена - 4", "цена-4%", "цена -4%", "цена - 4%", "-4", "-4%", "цена-3", "цена 3", "цена - 3", "цена-3%", "цена -3%", "цена - 3%", "-3", "-3%", "цена-2", "цена 2", "цена - 2", "цена-2%", "цена -2%", "цена - 2%", "-2", "-2%", "100%", "цена 100%"]):
+                            explicit_100_col = col
+                        if c_clean in ["цена", "базовая цена", "отпускная цена", "отп.цена", "цена без скидки"]:
+                            if not explicit_25_col:
+                                explicit_25_col = col
 
-                min_valid = min(10, max(2, int(len(df_file) * 0.1)))
-                price_col_indices = []
-                for idx, col in enumerate(raw_cols):
-                    if name_col_idx is not None and idx <= name_col_idx:
-                        continue
-                    c_str = str(col).lower().replace("–", "-").replace("—", "-").replace("−", "-").strip()
-                    if any(x in c_str for x in ["заказ", "орг. уп", "орг.уп", "произ.", "производитель", "годности", "годность", "остаток", "наличие"]):
-                        break
+                    min_valid = min(10, max(2, int(len(df_file) * 0.1)))
+                    price_col_indices = []
+                    for idx, col in enumerate(raw_cols):
+                        if name_col_idx is not None and idx <= name_col_idx:
+                            continue
+                        c_str = str(col).lower().replace("–", "-").replace("—", "-").replace("−", "-").strip()
+                        if any(x in c_str for x in ["заказ", "закз", "орг. уп", "орг.уп", "произ.", "производитель", "годности", "годность", "остаток", "наличие"]):
+                            break
 
-                    valid_prices = 0
-                    for v in df_file.iloc[:, idx].dropna():
-                        try:
-                            if float(v) > 500:
-                                valid_prices += 1
-                        except (ValueError, TypeError):
-                            pass
-                    if valid_prices >= min_valid:
-                        price_col_indices.append(idx)
+                        valid_prices = 0
+                        for v in df_file.iloc[:, idx].dropna():
+                            try:
+                                if float(v) > 500:
+                                    valid_prices += 1
+                            except (ValueError, TypeError):
+                                pass
+                        if valid_prices >= min_valid:
+                            price_col_indices.append(idx)
 
-                if explicit_25_col and explicit_100_col:
-                    p25_col = explicit_25_col
-                    p100_col = explicit_100_col
-                elif explicit_100_col and price_col_indices:
-                    p25_col = raw_cols[price_col_indices[0]]
-                    p100_col = explicit_100_col
-                elif len(price_col_indices) >= 2:
-                    p25_col = raw_cols[price_col_indices[0]]
-                    p100_col = raw_cols[price_col_indices[-1]]
-                elif price_col_indices:
-                    p25_col = raw_cols[price_col_indices[0]]
-                    p100_col = raw_cols[price_col_indices[0]]
-                else:
-                    p25_col = pick_price_column(raw_cols, price_c)
-                    p100_col = p25_col
+                    if explicit_25_col and explicit_100_col:
+                        p25_col = explicit_25_col
+                        p100_col = explicit_100_col
+                    elif explicit_100_col:
+                        # File contains only discount price (-4%): direct to 100% column, p25_col is None
+                        p100_col = explicit_100_col
+                        p25_col = None
+                    elif len(price_col_indices) >= 2:
+                        p25_col = raw_cols[price_col_indices[0]]
+                        p100_col = raw_cols[price_col_indices[-1]]
+                    elif price_col_indices:
+                        p25_col = raw_cols[price_col_indices[0]]
+                        p100_col = raw_cols[price_col_indices[0]]
+                    else:
+                        p25_col = pick_price_column(raw_cols, price_c)
+                        p100_col = p25_col
 
             
             if not name_col:
@@ -920,6 +952,14 @@ def run_svodny_horizontal(
             if progress:
                 progress(f"⚠️ Пропущен: Ошибка при обработке {path.name}: {str(ex)}")
 
+    # Подсветка вымывшихся позиций (были в прошлом прайсе, но отсутствуют сейчас)
+    if prev_prices:
+        for (r, c), prev_val in prev_prices.items():
+            if prev_val is not None and prev_val > 0:
+                cell = sheet.cell(row=r, column=c)
+                if cell.value is None or str(cell.value).strip() == "":
+                    cell.fill = FILL_DISAPPEARED
+
     sheet.cell(row=3, column=1).value = f"{today} г."
     wb.save(out)
     return out
@@ -944,6 +984,28 @@ def run_svodny_vertical(
     today = datetime.now().strftime("%d.%m.%Y")
     out = output_dir / f"Сводный прайс вертикально {today}.xlsx"
     return _save_matrix(matrix, out, vertical=True)
+
+
+def run_svodny_fergana(
+    settings_dict: Dict[str, Any],
+    catalog_list: List[Tuple[str, List[str]]],
+    price_files: List[Dict[str, Any]],
+    upload_dir: Path,
+    output_dir: Path,
+    progress: Optional[Callable[[str], None]] = None,
+) -> Path:
+    """Формирует отдельный сводный прайс-лист по оптовикам Ферганской долины."""
+    extracted, catalog, labels = _extract_matrix_rows(
+        settings_dict=settings_dict,
+        catalog_list=catalog_list,
+        price_files=price_files,
+        upload_dir=upload_dir,
+        progress=progress,
+    )
+    matrix = build_matrix_from_extracted(extracted, catalog, labels)
+    today = datetime.now().strftime("%d.%m.%Y")
+    out = output_dir / f"Сводный прайс Ферганская долина {today}.xlsx"
+    return _save_matrix(matrix, out, vertical=False)
 
 
 def run_assortment(

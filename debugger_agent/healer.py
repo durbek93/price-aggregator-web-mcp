@@ -98,13 +98,56 @@ async def diagnose_and_propose_fix(discrepancy: Discrepancy) -> ProposedFix:
             p100_col = data.get("p100_col") or fallback_p100
             explanation = data.get("explanation", f"Назначить p25='{p25_col}', p100='{p100_col}'")
             
+            def _match_existing_col(target: Optional[str]) -> Optional[str]:
+                if not target:
+                    return None
+                tgt_s = str(target).strip().lower()
+                if tgt_s.startswith("unnamed"):
+                    return None
+                for c in columns:
+                    c_s = str(c).strip().lower()
+                    if c_s.startswith("unnamed"):
+                        continue
+                    if c_s == tgt_s:
+                        return str(c)
+                for c in columns:
+                    c_s = str(c).strip().lower()
+                    if c_s.startswith("unnamed"):
+                        continue
+                    if "".join(c_s.split()) == "".join(tgt_s.split()):
+                        return str(c)
+                return None
+
+            # Validate that columns returned by LLM actually exist in the raw file
+            matched_name = _match_existing_col(name_col)
+            name_col = matched_name if matched_name else fallback_name
+
+            matched_p25 = _match_existing_col(p25_col)
+            matched_p100 = _match_existing_col(p100_col)
+
+            # Filter detected numeric price columns to exclude Unnamed
+            valid_num_cols = [c for c in numeric_cols if not str(c).strip().lower().startswith("unnamed")]
+
+            # If LLM proposed non-existent columns, fall back to detected numeric price columns
+            if p25_col and not matched_p25:
+                matched_p25 = valid_num_cols[0] if valid_num_cols else None
+            if p100_col and not matched_p100:
+                matched_p100 = valid_num_cols[-1] if valid_num_cols else matched_p25
+
+            p25_col = matched_p25
+            p100_col = matched_p100
+
             # Multi-file distributors should never have identical p25 and p100 mapped from a single file
             is_multi = discrepancy.distributor_key in ["grand", "promotion", "luxe"]
-            if is_multi and p25_col == p100_col:
+            if is_multi and p25_col and p25_col == p100_col:
                 if "100" in discrepancy.raw_filename.lower():
                     p25_col = None
                 else:
                     p100_col = None
+            elif discrepancy.distributor_key == "biotek" and p25_col and p100_col and p25_col == p100_col:
+                # For Biotek, if price columns are identical, assign to 100% discount price
+                p25_col = None
+                explanation = f"В прайс-листе Биотек Фарм колонка '{p100_col}' назначена в 100% предоплату (колонка 25% не заполняется)."
 
             return ProposedFix(
                 fix_id=fix_id,
@@ -130,8 +173,14 @@ async def diagnose_and_propose_fix(discrepancy: Discrepancy) -> ProposedFix:
         root_cause = f"Препарат «{raw_p}» не распознан или пропущен алгоритмом сопоставления с позицией «{target_p}»."
         explanation = f"Добавлено синонимическое сопоставление для «{raw_p}» ➔ «{target_p}»."
     else:
-        root_cause = "Обнаружено смещение или дублирование колонок цен у дистрибьютора."
-        explanation = f"Автоматически сопоставлены колонки: Базовая 25% ➔ '{fallback_p25}', 100% со скидкой ➔ '{fallback_p100}'."
+        if discrepancy.distributor_key == "biotek":
+            fallback_p25 = None
+            fallback_p100 = numeric_cols[0] if numeric_cols else "Цена"
+            root_cause = "В прайс-листе Биотек Фарм обнаружена только одна колонка цен без отдельных колонок скидок."
+            explanation = f"Назначить для Биотек Фарм 100% со скидкой ➔ '{fallback_p100}', колонка 25% не заполняется."
+        else:
+            root_cause = "Обнаружено смещение или дублирование колонок цен у дистрибьютора."
+            explanation = f"Автоматически сопоставлены колонки: Базовая 25% ➔ '{fallback_p25}', 100% со скидкой ➔ '{fallback_p100}'."
 
     return ProposedFix(
         fix_id=fix_id,
@@ -147,3 +196,4 @@ async def diagnose_and_propose_fix(discrepancy: Discrepancy) -> ProposedFix:
         },
         explanation=explanation
     )
+

@@ -2,6 +2,7 @@
 import logging
 import asyncio
 import re
+from aiohttp import web
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import BufferedInputFile
@@ -250,6 +251,54 @@ async def send_report_in_chunks(message: types.Message, text: str, parse_mode: s
             await message.reply(chunk)
 
 
+async def send_chat_report_in_chunks(chat_id: int | str, text: str, parse_mode: str = "HTML"):
+    chunks = split_html_message(text, max_chars=4000)
+    for chunk in chunks:
+        if not chunk.strip():
+            continue
+        try:
+            await bot.send_message(chat_id=chat_id, text=chunk, parse_mode=parse_mode)
+        except Exception as e:
+            logger.warning(f"Failed to send chunk to chat {chat_id} with parse_mode={parse_mode}: {e}. Retrying plain text...")
+            await bot.send_message(chat_id=chat_id, text=chunk)
+
+
+async def process_and_send_svodny_analysis(chat_id: int | str, user_id: str = "1", scope: str = "republic") -> bool:
+    try:
+        data = await fetch_analysis_data(scope=scope)
+        if not data or not data.get("drugs"):
+            logger.warning(f"No analysis data returned from backend for automated trigger (scope={scope}).")
+            return False
+        report_text = await generate_ai_report(data, include_deficit=False, scope=scope)
+        await send_chat_report_in_chunks(chat_id, report_text, parse_mode="HTML")
+        logger.info(f"Automated svodny report successfully sent to chat {chat_id} (scope={scope})")
+        return True
+    except Exception as e:
+        logger.exception(f"Error generating automated svodny report: {e}")
+        return False
+
+
+async def handle_trigger_report(request: web.Request) -> web.Response:
+    try:
+        body = await request.json() if request.can_read_body else {}
+    except Exception:
+        body = {}
+    
+    auth_header = request.headers.get("X-Internal-API-Key", "")
+    if auth_header and config.INTERNAL_API_KEY and auth_header != config.INTERNAL_API_KEY:
+        return web.json_response({"error": "Unauthorized"}, status=401)
+        
+    chat_id = body.get("chat_id") or config.TELEGRAM_GROUP_ID
+    user_id = str(body.get("user_id") or "1")
+    scope = str(body.get("scope") or "republic")
+    if not chat_id:
+        return web.json_response({"error": "No chat_id provided and TELEGRAM_GROUP_ID not configured"}, status=400)
+        
+    logger.info(f"Received automated report trigger for chat_id={chat_id}, user_id={user_id}, scope={scope}")
+    asyncio.create_task(process_and_send_svodny_analysis(chat_id, user_id, scope=scope))
+    return web.json_response({"status": "ok", "message": "Report generation triggered"})
+
+
 @dp.message()
 async def handle_new_report_notification(message: types.Message):
     """Обрабатывает сообщения в закрытой группе и реагирует на уведомления от главного бота."""
@@ -264,48 +313,45 @@ async def handle_new_report_notification(message: types.Message):
         logger.info(f"Ignored message: chat_id {chat_id} does not match TELEGRAM_GROUP_ID {config.TELEGRAM_GROUP_ID}")
         return
     
-    # 3. Проверяем упоминание нашего бота-аналитика
+    # 2. Проверяем бота-получателя
     bot_info = await bot.get_me()
-    bot_mention = f"@{bot_info.username}"
-    
+    bot_username = (bot_info.username or "lightprice_analyst_bot").lower()
+    bot_mention = f"@{bot_username}"
+
+    # Если команда или сообщение явно адресованы другому боту (например, @lightprice_aggr_bot), игнорируем
+    if "@" in text_low:
+        words_with_at = [w for w in text_low.split() if "@" in w]
+        if any(w.startswith("@") and not w.startswith(bot_mention) for w in words_with_at):
+            if bot_mention not in text_low:
+                logger.info(f"Ignored message addressed to another bot: {text[:60]}")
+                return
+
+    is_private = message.chat.type == "private"
     is_mentioned = (
         bot_mention in text_low or 
         "@lightprice_analyst_bot" in text_low or 
-        "аналитик" in text_low
+        text_low.startswith(("аналитик,", "аналитик ", "аналитик\n", "аналитик:")) or
+        " аналитик," in text_low or
+        " аналитик " in text_low or
+        " аналитик\n" in text_low or
+        " аналитик:" in text_low
+    )
+    is_reply_to_me = bool(
+        message.reply_to_message and 
+        message.reply_to_message.from_user and 
+        message.reply_to_message.from_user.id == bot_info.id
     )
     is_direct_command = (
-        text_low.startswith(("/fetch", "/download_prices", "/clean", "/purge")) or
+        text_low.startswith((f"/fetch@{bot_username}", f"/clean@{bot_username}", f"/purge@{bot_username}")) or
+        (is_private and text_low.startswith(("/fetch", "/download_prices", "/clean", "/purge"))) or
         "скачай последние прайсы" in text_low or
         "скачай прайсы" in text_low or
         "загрузи прайсы" in text_low or
         "очисти память" in text_low
     )
     
-    if not is_mentioned and not is_from_main_bot and not is_direct_command:
-        logger.info("Ignored message: not from main bot, not mentioned, and not a direct command.")
-        return
-        
-    # 4. Проверяем триггерный текст от бэкенда или ключевые слова (если бот не был прямо упомянут)
-    has_trigger_keyword = any(
-        kw in text_low
-        for kw in [
-            "сводный прайс-лист собран автоматически",
-            "отчет",
-            "анализ",
-            "изменени",
-            "дефицит",
-            "аналитик",
-            "прайс",
-            "файл",
-            "база",
-            "бд",
-            "какие",
-            "покажи",
-            "сводн",
-        ]
-    )
-    if not (is_mentioned or is_from_main_bot or message.chat.type == "private" or has_trigger_keyword):
-        logger.info("Ignored message: no trigger keyword found and bot is not directly addressed.")
+    if not (is_mentioned or is_reply_to_me or is_private or is_direct_command):
+        logger.info("Ignored message: bot is not addressed (no mention, reply, or direct command).")
         return
         
     logger.info("Valid trigger message intercepted. Processing analysis report...")
@@ -487,23 +533,24 @@ async def handle_new_report_notification(message: types.Message):
                 return
 
             # Шаг 1: Запрашиваем дельту цен с бэкенда для общего отчета
-            data = await fetch_analysis_data(date1=date1, date2=date2)
+            scope = "fergana" if any(w in text_low for w in ["ферган", "долин", "фергана"]) else "republic"
+            data = await fetch_analysis_data(date1=date1, date2=date2, scope=scope)
             if not data or not data.get("drugs"):
                 error_text = (
                     "❌ Не удалось получить данные анализа цен от бэкенда."
                     if not data
-                    else "⚠️ Бэкенд не вернул данных о ценах препаратов для анализа (список пуст)."
+                    else f"⚠️ Бэкенд не вернул данных о ценах препаратов для анализа (scope={scope})."
                 )
                 await safe_delete_message(status_msg)
                 await message.reply(error_text)
                 return
                 
             # Проверим, запрашивает ли пользователь отчет с дефицитом/дефектурой
-            include_deficit = any(kw in text_low for kw in ["дефицит", "дефектур", "вымыв", "нет в наличии", "отсутству"])
-            logger.info(f"Generating report with include_deficit={include_deficit}")
+            include_deficit = any(kw in text_low for kw in ["дефицит", "дефектур", "дефектура", "дефектурам", "нет в наличии", "отсутству"])
+            logger.info(f"Generating report with include_deficit={include_deficit}, scope={scope}")
             
             # Шаг 2: Генерируем аналитику через Gemini 2.5 Flash
-            report_text = await generate_ai_report(data, include_deficit=include_deficit)
+            report_text = await generate_ai_report(data, include_deficit=include_deficit, scope=scope)
             
             # Шаг 3: Удаляем временное сообщение и публикуем отчет
             await safe_delete_message(status_msg)
@@ -511,10 +558,11 @@ async def handle_new_report_notification(message: types.Message):
             await send_report_in_chunks(message, report_text, parse_mode="HTML")
 
             if wants_chart:
-                chart_bytes = chart_generator.generate_price_trend_chart(data, "Общий анализ цен")
+                chart_title = "Анализ цен (Ферганская долина)" if scope == "fergana" else "Общий анализ цен"
+                chart_bytes = chart_generator.generate_price_trend_chart(data, chart_title)
                 if chart_bytes:
                     photo = BufferedInputFile(chart_bytes, filename="price_analysis.png")
-                    await message.reply_photo(photo=photo, caption="📊 <b>Сравнение минимальных и средних цен</b>", parse_mode="HTML")
+                    await message.reply_photo(photo=photo, caption=f"📊 <b>{chart_title}</b>", parse_mode="HTML")
 
             if wants_presentation:
                 sales_data = await fetch_sales_data() or {}
@@ -531,14 +579,26 @@ async def handle_new_report_notification(message: types.Message):
 
 
 async def main():
-    logger.info("Starting Analyst Agent bot...")
+    logger.info("Starting Analyst Agent bot and internal HTTP server...")
     bot_info = await bot.get_me()
     logger.info(f"Bot info: @{bot_info.username} (ID: {bot_info.id})")
     logger.info(f"Configured main bot ID: {config.MAIN_BOT_ID}")
     logger.info(f"Configured group ID: {config.TELEGRAM_GROUP_ID}")
     
-    # Start polling
-    await dp.start_polling(bot)
+    # Setup internal HTTP server on port 8002
+    app = web.Application()
+    app.router.add_post("/trigger_report", handle_trigger_report)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 8002)
+    await site.start()
+    logger.info("Internal HTTP server started on 0.0.0.0:8002")
+
+    try:
+        # Start polling
+        await dp.start_polling(bot)
+    finally:
+        await runner.cleanup()
 
 
 if __name__ == "__main__":

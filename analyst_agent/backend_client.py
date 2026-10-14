@@ -8,15 +8,15 @@ import config
 logger = logging.getLogger("analyst_agent.backend_client")
 
 
-async def fetch_analysis_data(date1: Optional[str] = None, date2: Optional[str] = None) -> Optional[dict]:
+async def fetch_analysis_data(date1: Optional[str] = None, date2: Optional[str] = None, scope: str = "republic") -> Optional[dict]:
     """Запрашивает дельту цен с бэкенда FastAPI для общего еженедельного анализа или сравнения двух конкретных дат."""
     try:
-        logger.info(f"Fetching price comparison analysis from backend (date1={date1}, date2={date2})...")
+        logger.info(f"Fetching price comparison analysis from backend (date1={date1}, date2={date2}, scope={scope})...")
         headers = {
             "X-Internal-API-Key": config.INTERNAL_API_KEY,
             "X-Target-User-ID": "1"
         }
-        params = {}
+        params = {"scope": scope}
         if date1:
             params["date1"] = date1
         if date2:

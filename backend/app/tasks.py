@@ -28,13 +28,13 @@ from aiogram.types import FSInputFile
 logger = logging.getLogger(__name__)
 
 
-def send_telegram_doc_sync(telegram_id: int | str, file_path: str, caption: str) -> None:
+def send_telegram_doc_sync(telegram_id: int | str, file_path: str, caption: str, parse_mode: str = "HTML") -> None:
     """Вспомогательная функция для синхронной отправки документа в Telegram."""
     async def _send():
         try:
             bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
             doc = FSInputFile(file_path)
-            await bot.send_document(chat_id=telegram_id, document=doc, caption=caption)
+            await bot.send_document(chat_id=telegram_id, document=doc, caption=caption, parse_mode=parse_mode)
             await bot.session.close()
             logger.info(f"Report sent successfully to Telegram ID {telegram_id}")
         except Exception as e:
@@ -146,18 +146,60 @@ def run_pipeline_task(self, task_record_id: int) -> Dict[str, Any]:
         for item in catalog_items:
             catalog_list.append((item.canonical, item.aliases))
 
-        # Загружаем список загруженных прайсов (input файлов)
-        if task_record.file_ids:
-            input_files_db = db.query(FileRecord).filter(
-                FileRecord.user_id == user.id,
-                FileRecord.file_type == "input",
-                FileRecord.id.in_(task_record.file_ids)
-            ).all()
+        # Запуск соответствующего алгоритма конвейера
+        task_type = task_record.task_type
+
+        # Папки для пользователя с изоляцией Ферганы
+        if task_type == "svodny_fergana":
+            user_upload_dir = settings.UPLOAD_DIR / str(user.id) / "fergana"
+            user_output_dir = settings.OUTPUT_DIR / str(user.id) / "fergana"
         else:
-            input_files_db = db.query(FileRecord).filter(
-                FileRecord.user_id == user.id,
-                FileRecord.file_type == "input"
-            ).all()
+            user_upload_dir = settings.UPLOAD_DIR / str(user.id)
+            user_output_dir = settings.OUTPUT_DIR / str(user.id)
+        user_upload_dir.mkdir(parents=True, exist_ok=True)
+        user_output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Загружаем список загруженных прайсов (input файлов)
+        if task_type == "svodny_fergana":
+            if task_record.file_ids:
+                input_files_db = db.query(FileRecord).filter(
+                    FileRecord.user_id == user.id,
+                    FileRecord.file_type == "input",
+                    FileRecord.id.in_(task_record.file_ids)
+                ).all()
+            else:
+                input_files_db = db.query(FileRecord).filter(
+                    FileRecord.user_id == user.id,
+                    FileRecord.file_type == "input",
+                    FileRecord.storage_path.like("%/fergana/%")
+                ).all()
+                if not input_files_db and user_upload_dir.exists():
+                    for fpath in user_upload_dir.glob("*.xls*"):
+                        if fpath.is_file() and not fpath.name.startswith("~"):
+                            from app.services.file_service import FileService
+                            clean_fn = FileService.sanitize_user_filename(fpath.name)
+                            rec = FileService.register_input_file_db(
+                                db=db,
+                                user_id=user.id,
+                                filename=clean_fn,
+                                file_size=fpath.stat().st_size,
+                                storage_path=fpath,
+                                read_preset=""
+                            )
+                            input_files_db.append(rec)
+        else:
+            if task_record.file_ids:
+                input_files_db = db.query(FileRecord).filter(
+                    FileRecord.user_id == user.id,
+                    FileRecord.file_type == "input",
+                    FileRecord.id.in_(task_record.file_ids)
+                ).all()
+            else:
+                input_files_db = db.query(FileRecord).filter(
+                    FileRecord.user_id == user.id,
+                    FileRecord.file_type == "input",
+                    ~FileRecord.storage_path.like("%/fergana/%")
+                ).all()
 
         price_files = []
         for f in input_files_db:
@@ -166,12 +208,6 @@ def run_pipeline_task(self, task_record_id: int) -> Dict[str, Any]:
                 "display_name": f.display_name,
                 "read_preset": f.read_preset,
             })
-
-        # Папки для пользователя
-        user_upload_dir = settings.UPLOAD_DIR / str(user.id)
-        user_output_dir = settings.OUTPUT_DIR / str(user.id)
-        user_upload_dir.mkdir(parents=True, exist_ok=True)
-        user_output_dir.mkdir(parents=True, exist_ok=True)
 
         # Callback для обновления прогресса в БД
         def update_progress(msg: str) -> None:
@@ -215,6 +251,17 @@ def run_pipeline_task(self, task_record_id: int) -> Dict[str, Any]:
                 progress=update_progress
             )
             result_msg = "Сводный прайс (вертикально) успешно собран."
+
+        elif task_type == "svodny_fergana":
+            out_path = pipeline.run_svodny_fergana(
+                settings_dict=settings_dict,
+                catalog_list=catalog_list,
+                price_files=price_files,
+                upload_dir=user_upload_dir,
+                output_dir=user_output_dir,
+                progress=update_progress
+            )
+            result_msg = "Сводный прайс Ферганской долины успешно собран."
 
         elif task_type == "assortment":
             out_path = pipeline.run_assortment(
@@ -271,7 +318,7 @@ def run_pipeline_task(self, task_record_id: int) -> Dict[str, Any]:
             db.commit()
 
             # Автоматическая очистка исходных прайсов после выполнения задачи
-            if task_type in ["svodny_horizontal", "svodny_vertical", "assortment"] and getattr(user_settings, "clear_inputs_after_processing", True):
+            if task_type in ["svodny_horizontal", "svodny_vertical", "svodny_fergana"] and getattr(user_settings, "clear_inputs_after_processing", True):
                 try:
                     if task_record.file_ids:
                         input_files = db.query(FileRecord).filter(
@@ -295,28 +342,71 @@ def run_pipeline_task(self, task_record_id: int) -> Dict[str, Any]:
                     logger.error(f"Failed to automatically clear input files: {ex}")
 
             # Отправляем файл пользователю или в группу Telegram
-            if task_record.is_automated and settings.TELEGRAM_GROUP_ID:
-                caption = (
-                    "📊 **Сводный прайс-лист собран автоматически!**\n\n"
-                    "@lightprice_analyst_bot, подготовь аналитический отчет по изменениям цен."
-                )
-                group_id_val = settings.TELEGRAM_GROUP_ID
-                if group_id_val.startswith("-") and group_id_val[1:].isdigit():
-                    group_id_val = int(group_id_val)
-                elif group_id_val.isdigit():
-                    group_id_val = int(group_id_val)
-                send_telegram_doc_sync(group_id_val, str(out_path), caption)
+            group_id_val = None
+            if settings.TELEGRAM_GROUP_ID:
+                group_val = str(settings.TELEGRAM_GROUP_ID).strip()
+                if (group_val.startswith("-") and group_val[1:].isdigit()) or group_val.isdigit():
+                    group_id_val = int(group_val)
+                else:
+                    group_id_val = group_val
+
+            if task_type == "svodny_fergana":
+                if group_id_val:
+                    caption = (
+                        "🍇 <b>[ФЕРГАНСКАЯ ДОЛИНА] Сводный прайс-лист собран!</b>\n\n"
+                        f"📄 Файл: <code>{out_path.name}</code>\n"
+                        "@lightprice_analyst_bot, подготовь аналитический отчет по изменениям цен в Ферганской долине."
+                    )
+                    send_telegram_doc_sync(group_id_val, str(out_path), caption)
+
+                    # Trigger analyst_agent directly
+                    try:
+                        import urllib.request
+                        import json
+                        req = urllib.request.Request(
+                            "http://analyst_agent:8082/trigger_report",
+                            data=json.dumps({"chat_id": group_id_val, "scope": "fergana"}).encode("utf-8"),
+                            headers={
+                                "X-Internal-API-Key": getattr(settings, "INTERNAL_API_KEY", "11121993_29081966"),
+                                "Content-Type": "application/json"
+                            },
+                            method="POST"
+                        )
+                        urllib.request.urlopen(req, timeout=3)
+                    except Exception as ex:
+                        logger.debug(f"analyst_agent fergana trigger skipped or unreachable: {ex}")
+
+                if not task_record.is_automated and user and user.telegram_id:
+                    caption = f"🍇 Сводный прайс Ферганской долины успешно собран!\n📄 Результат: {out_path.name}"
+                    send_telegram_doc_sync(user.telegram_id, str(out_path), caption)
+
+            elif task_type in ["svodny_horizontal", "svodny_vertical"]:
+                if group_id_val:
+                    caption = (
+                        "📊 <b>Сводный прайс-лист собран!</b>\n\n"
+                        f"📄 Файл: <code>{out_path.name}</code>\n"
+                        "@lightprice_analyst_bot, подготовь аналитический отчет по изменениям цен."
+                    )
+                    send_telegram_doc_sync(group_id_val, str(out_path), caption)
+
+                if not task_record.is_automated and user and user.telegram_id:
+                    caption = f"✅ Задача {task_type} успешно выполнена!\n📄 Результат: {out_path.name}"
+                    send_telegram_doc_sync(user.telegram_id, str(out_path), caption)
+
+
             else:
                 caption = f"✅ Задача {task_type} успешно выполнена!\n📄 Результат: {out_path.name}"
-                send_telegram_doc_sync(user.telegram_id, str(out_path), caption)
+                if user and user.telegram_id:
+                    send_telegram_doc_sync(user.telegram_id, str(out_path), caption)
 
             # Notify Debugger Agent to verify output
-            if task_type in ["svodny_horizontal", "svodny_vertical"]:
+            if task_type in ["svodny_horizontal", "svodny_vertical", "svodny_fergana"]:
                 try:
                     import urllib.request
+                    import json
                     req = urllib.request.Request(
                         "http://debugger_agent:8001/audit",
-                        data=b"{}",
+                        data=json.dumps({"scope": "fergana" if task_type == "svodny_fergana" else "republic"}).encode("utf-8"),
                         headers={
                             "X-Internal-Key": getattr(settings, "INTERNAL_API_KEY", "11121993_29081966"),
                             "Content-Type": "application/json"
@@ -324,7 +414,7 @@ def run_pipeline_task(self, task_record_id: int) -> Dict[str, Any]:
                         method="POST"
                     )
                     urllib.request.urlopen(req, timeout=3)
-                    logger.info("Successfully notified debugger_agent for audit.")
+                    logger.info(f"Successfully notified debugger_agent for audit (task_type={task_type}).")
                 except Exception as ex:
                     logger.debug(f"debugger_agent notification skipped or unreachable: {ex}")
 

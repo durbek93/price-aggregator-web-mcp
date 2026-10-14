@@ -9,11 +9,11 @@ import config
 logger = logging.getLogger("scout_agent.api_client")
 
 
-async def upload_file_to_backend(file_path: str) -> Optional[int]:
+async def upload_file_to_backend(file_path: str, subfolder: Optional[str] = None) -> Optional[int]:
     """Загружает файл на бэкенд FastAPI с использованием X-Internal-API-Key."""
     try:
         filename = os.path.basename(file_path)
-        logger.info(f"Uploading file {filename} to backend...")
+        logger.info(f"Uploading file {filename} to backend (subfolder={subfolder})...")
         async with httpx.AsyncClient() as client:
             with open(file_path, "rb") as f:
                 files = {
@@ -23,6 +23,9 @@ async def upload_file_to_backend(file_path: str) -> Optional[int]:
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                 }
+                data_payload = {}
+                if subfolder:
+                    data_payload["subfolder"] = subfolder
                 headers = {
                     "X-Internal-API-Key": config.INTERNAL_API_KEY,
                     "X-Target-User-ID": "1"
@@ -30,6 +33,7 @@ async def upload_file_to_backend(file_path: str) -> Optional[int]:
                 response = await client.post(
                     f"{config.BACKEND_URL}/api/files/upload",
                     files=files,
+                    data=data_payload,
                     headers=headers,
                     timeout=60.0
                 )
@@ -49,10 +53,10 @@ async def upload_file_to_backend(file_path: str) -> Optional[int]:
         return None
 
 
-async def trigger_aggregation_task(file_ids: List[int]) -> bool:
+async def trigger_aggregation_task(file_ids: List[int], task_type: str = "svodny_horizontal") -> bool:
     """Запускает Celery задачу сборки на бэкенде."""
     try:
-        logger.info(f"Triggering horizontal aggregation task for file IDs: {file_ids}")
+        logger.info(f"Triggering {task_type} task for file IDs: {file_ids}")
         async with httpx.AsyncClient() as client:
             headers = {
                 "X-Internal-API-Key": config.INTERNAL_API_KEY,
@@ -60,7 +64,7 @@ async def trigger_aggregation_task(file_ids: List[int]) -> bool:
                 "Content-Type": "application/json"
             }
             body = {
-                "task_type": "svodny_horizontal",
+                "task_type": task_type,
                 "is_automated": True,
                 "file_ids": file_ids
             }

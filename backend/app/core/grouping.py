@@ -106,9 +106,13 @@ def normalize_product_for_grouping(raw: str) -> str:
     s = s.replace("+", " ")
     s = re.sub(r"\bдоза\b", "доз", s)
     s = re.sub(r"\bд/взрос\w*\b", "взросл ", s)
+    s = re.sub(r"\bд/взр\w*\b", "взросл ", s)
     s = re.sub(r"\bвзрос\w*\b", "взросл ", s)
+    s = re.sub(r"\bвзр\b", "взросл ", s)
     s = re.sub(r"\bд/дет\w*\b", "дети ", s)
     s = re.sub(r"\bдетс\w*\b", "дети ", s)
+    s = re.sub(r"\bдетиск\w*\b", "дети ", s)
+    s = re.sub(r"\bдет\b", "дети ", s)
     s = re.sub(r"\bдетей\b", "дети ", s)
     s = re.sub(r"\bэвкалипт\w*", "эвкалипт ", s)
     s = _join_adjacent_cyrillic_name_parts(s)
@@ -203,6 +207,9 @@ def fuzzy_merge_canonicals(
             return
         a_is_cat = ra in catalog_canonicals
         b_is_cat = rb in catalog_canonicals
+        # КАТЕГОРИЧЕСКИ НЕЛЬЗЯ объединять две разные позиции каталога между собой!
+        if a_is_cat and b_is_cat:
+            return
         if a_is_cat and not b_is_cat:
             parent[rb] = ra
         elif b_is_cat and not a_is_cat:
@@ -212,9 +219,48 @@ def fuzzy_merge_canonicals(
                 ra, rb = rb, ra
             parent[rb] = ra
 
+    def _is_child(s: str) -> bool:
+        sl = s.lower()
+        return any(k in sl for k in ["дет", "дети", "детск", "д/д", "д/дет", "child", "kids"])
+
+    def _is_adult(s: str) -> bool:
+        sl = s.lower()
+        return any(k in sl for k in ["взр", "взрос", "adult"])
+
+    def _get_form(s: str) -> str:
+        sl = s.lower()
+        if "кап" in sl or "drops" in sl:
+            return "drops"
+        if "гранул" in sl or "гран" in sl:
+            return "granules"
+        if "раствор" in sl or "сироп" in sl:
+            return "liquid"
+        if "таб" in sl:
+            return "tabs"
+        if "мазь" in sl or "крем" in sl or "гель" in sl:
+            return "ointment"
+        if "спрей" in sl:
+            return "spray"
+        return "other"
+
     for i in range(len(keys)):
         for j in range(i + 1, len(keys)):
             a, b = keys[i], keys[j]
+            # Никогда не объединяем две утвержденные позиции каталога
+            if a in catalog_canonicals and b in catalog_canonicals:
+                continue
+
+            # Защита детский vs взрослый
+            is_c_a, is_c_b = _is_child(a), _is_child(b)
+            is_ad_a, is_ad_b = _is_adult(a), _is_adult(b)
+            if (is_c_a != is_c_b) or (is_ad_a != is_ad_b):
+                continue
+
+            # Защита лекарственных форм
+            form_a, form_b = _get_form(a), _get_form(b)
+            if form_a != "other" and form_b != "other" and form_a != form_b:
+                continue
+
             norm_a = normalize_product_for_grouping(a)
             norm_b = normalize_product_for_grouping(b)
             
@@ -232,6 +278,8 @@ def fuzzy_merge_canonicals(
                         nums.add(t)
                     elif "d" in t and any(c.isdigit() for c in t):
                         nums.add(t)
+                    elif t.startswith("n") and t[1:].isdigit():
+                        nums.add(t[1:])
                 return frozenset(nums)
                 
             nums_a = _extract_nums(norm_a)
@@ -321,12 +369,18 @@ def build_catalog_materia_medica() -> List[Tuple[str, List[str]]]:
         ("Анаферон детский таб №20", [
             "анаферон дет", "анаф дет", "анаферон детский таб", "анаферон детский таб n20",
             "анаферон детский таб. №20", "анаферон таб. детские №20", "анаферон таб. детск. №20",
-            "анаферон таб детск", "анаферон таб детские n20",
+            "анаферон таб детск", "анаферон таб детские n20", "анаферон детский",
+            "анаферон детский таб №20", "анаферон таб. дет. №20", "анаферон таб. дет №20",
+            "анаферон таб дет №20", "анаферон таб №20 дет", "анаферон таб №20 д/детей",
+            "анаферон таб №20 д/д", "анаферон 20 таб дет", "анаферон дет. 20 таб",
+            "анаферон для детей таб №20", "анаферон для детей", "anaferon detskiy",
+            "anaferon det", "anaferon bolalar"
         ]),
-        ("Анаферон взрослый таб №20", ["Анаферон взрос. №20", "АНАФЕРОН №20 Д/ВЗР", "Анаферон таб. Взр №20", "анаферон таб", "Анаферон взр таб №20 !!!", "Анаферон взр таб №20", "анаферон взрослый", "анаферон таб. №20", "АНАФЕРОН ДЛЯ ВЗРОС  ТАБ N20", "анаферон для взрос", "анаферон для взрослых", "анаферон взр таб n20"]),
+        ("Анаферон взрослый таб №20", ["Анаферон таб №20", "Анаферон взрос. №20", "АНАФЕРОН №20 Д/ВЗР", "Анаферон таб. Взр №20", "анаферон таб", "Анаферон взр таб №20 !!!", "Анаферон взр таб №20", "анаферон взрослый", "анаферон таб. №20", "АНАФЕРОН ДЛЯ ВЗРОС  ТАБ N20", "анаферон для взрос", "анаферон для взрослых", "анаферон взр таб n20"]),
         ("Анаферон капли (детские) 25мл", [
             "Анаферон детский капли 25мл.", "Анаферон детск капли для п/внутрь 25мл гомеоп", "Анаферон детский капли 25мл", "Анаферон детский капли гомеоп. д/приема внутрь 25мл ", "Анаферон детский капли д/приема внутрь 25мл", "анаферон капли", "анаферон капли дет", "анаферон капли 25", "анаферон капли (детские) 25мл",
-            "анаферон детский капли", "анаферон капли д/детей 25мл", "Анаферон Детский капли 25мл", "Анаферон детский капли д/детей 25мл", "Анаферон детский  капли для п/внутрь 25мл", "Анаферон детский капли д/п/внутрь 25мл"    
+            "анаферон детский капли", "анаферон капли д/детей 25мл", "Анаферон Детский капли 25мл", "Анаферон детский капли д/детей 25мл", "Анаферон детский  капли для п/внутрь 25мл", "Анаферон детский капли д/п/внутрь 25мл",
+            "Анаферон кап.д/вн д/дет 25мл", "Анаферон кап. д/вн д/дет 25мл", "Анаферон кап д/вн д/дет 25мл", "Анаферон кап.д/вн 25мл", "Анаферон кап. 25мл", "Анаферон кап 25мл", "Анаферон капли д/вн 25мл", "Анаферон капли 25 мл", "Анаферон дет. капли 25мл", "Анаферон детские капли 25мл", "Анаферон кап.дет 25мл", "АНАФЕРОН КАПЛИ ДЛЯ П/ВНУТРЬ 25МЛ Д/ДЕТЕЙ"
         ]),
         ("Эргоферон таб №20", [
             "эргоферон таб", "эргоферон таб.", "эргоферон таб №20", "эргоферон таб. №20",
@@ -336,7 +390,8 @@ def build_catalog_materia_medica() -> List[Tuple[str, List[str]]]:
         ]),
         ("Ренгалин таб. №20", ["ренгалин таб", "ренгалин таб. №20",]),
         ("Ренгалин раствор №1", ["Ренгалин р-р д/внутр. прим.100мл", "Ренгалин р-р. 100мл №1", "Ренгалин р-р для прием.внутрь гомеоп. 100мл", "Ренгалин р-р д/приёма внутрь 100мл ", "Ренгалин р-р 100мл №1", "ренгалин раствор","РЕНГАЛИН Р-Р Д/ПРИЕМА ВНУТРЬ ГОМЕО-Е 100МЛ", 
-            "Ренгалин р-р д/пр внут гомеоп  100мл", "ренгалин 100", "ренгалин сироп", "Ренгалин р-р д/прием. внутрь 100мл", "Ренгалин р-р д/пр внут 100мл", "Ренгалин р-р д/пр. внутрь гомеоп. 100мл", "Ренгалин р-р. 100мл №1"]),
+            "Ренгалин р-р д/пр внут гомеоп  100мл", "ренгалин 100", "ренгалин сироп", "Ренгалин р-р д/прием. внутрь 100мл", "Ренгалин р-р д/пр внут 100мл", "Ренгалин р-р д/пр. внутрь гомеоп. 100мл", "Ренгалин р-р. 100мл №1",
+            "Ренгалин р-р.д/вн 100мл", "Ренгалин р-р д/вн 100мл", "Ренгалин р-р. д/вн 100мл", "Ренгалин р-р.д/вн 100 мл", "Ренгалин р-р д/вн 100 мл", "Ренгалин р-р д/вн", "Ренгалин р-р.д/вн", "Ренгалин 100мл", "Ренгалин 100 мл"]),
         ("Тенотен таб №40", [
             "тенотен таб. №40", "тенотен таб n40", "ТЕНОТЕН ВЗРОС  ТАБ N40",
             "тенотен взр таб", "тенотен взр", "тенотен взрос",
@@ -345,13 +400,16 @@ def build_catalog_materia_medica() -> List[Tuple[str, List[str]]]:
         ("Тенотен детский таб №40", [
             "Тенотен-Детский таб.№40", "тенотен дет", "тенотен таб детский", "тенотен таб. детский №40",
             "тенотен таб №40 д/детей", "тенотен таб. детс. №40", "Тенотен таб. детский №40",
+            "тенотен детский", "тенотен детский таб", "тенотен детский таб. №40", "тенотен таб. дет. №40",
+            "тенотен таб дет №40", "тенотен таб №40 дет", "тенотен таб №40 д/д", "тенотен таб №40 для детей",
+            "тенотен для детей", "тенотен д/детей", "тенотен дет. №40", "тенотен таб.дет.№40",
+            "tenoten detskiy", "tenoten bolalar", "tenoten det"
         ]),
         ("Импаза №20", ["ИМПАЗА №20", "импаза таб", "импаза таб. №20"]),
         ("Афала №100", [
             "афала №100", "афала таб №100", "афала таб. №100", "афала таб n100",
             "афала гомеопат таб n100", "афала гомеопат таб №100",
         ]),
-        ("Афалаза", ["афалаза"]),
         ("Климаксан таб. №20", ["климаксан таб", "климаксан таб. №20"]),
         ("Климаксан гранулы 10г", ["климаксан гранулы", "климаксан 10г гранул", "климаксан 10г гранул/мат.мед", "климаксан гран"]),
         ("Млекоин гранулы 10г", ["млекоин гранулы", "млекоин 10г", "МЛЕКОИН ГРАН.ГОМЕОП.10Г"]),
@@ -371,24 +429,43 @@ def match_canonical(
     if re.search(r'(?:^|[\s\-_/(\[])(?:сдк|sdk)(?:$|[\s\-_/)\]])', name_norm):
         return None
 
+    # Приоритет формы капель для Анаферона (капли никогда не должны определяться как таблетки)
+    is_anaferon_drops = False
+    if "анаферон" in name_norm:
+        is_anaferon_drops = (
+            any(k in name_norm for k in ["капл", "кап.", "кап ", "кап/", "кап-", "капли", "капель", "25мл", "25 мл", "25ml", "25 ml"]) or
+            ("кап" in name_norm and not any(t in name_norm for t in ["таб", "табл", "таблет"]))
+        )
+        if is_anaferon_drops:
+            # Ищем каноническое название капель в каталоге, если есть
+            for c, _ in catalog:
+                c_low = c.lower()
+                if "анаферон" in c_low and any(k in c_low for k in ["кап", "25мл", "25 мл"]):
+                    return c
+            return "Анаферон капли (детские) 25мл"
+
     if legacy_priority_rules:
         if "эргоферон" in name_norm or "ergoferon" in name_norm:
             return "Эргоферон таб №20"
 
         if "анаферон" in name_norm:
-            if ("капл" in name_norm) or ("25мл" in name_norm):
-                return "Анаферон капли (детские) 25мл"
-            if ("взрос" in name_norm) or ("для взрос" in name_norm) or ("д/взр" in name_norm):
+            if any(k in name_norm for k in ["взрос", "для взрос", "д/взр", "д/взрос"]):
                 return "Анаферон взрослый таб №20"
-            if "дет" in name_norm:
+            if any(k in name_norm for k in ["дет", "д/дет", "д/д", "для дет", "для детей", "bolalar", "child"]):
                 return "Анаферон детский таб №20"
             return "Анаферон взрослый таб №20"
 
         if "тенотен" in name_norm:
-            if ("дет" in name_norm) or ("д/дет" in name_norm):
+            if any(k in name_norm for k in ["дет", "д/дет", "д/д", "для дет", "для детей", "bolalar", "child"]):
                 return "Тенотен детский таб №40"
-            if ("взр" in name_norm) or ("взрос" in name_norm):
+            if any(k in name_norm for k in ["взр", "взрос", "для взрос", "д/взр"]):
                 return "Тенотен таб №40"
+            return "Тенотен таб №40"
+
+        if "ренгалин" in name_norm:
+            if any(k in name_norm for k in ["раствор", "р-р", "р-р.д/вн", "д/вн", "100мл", "100 мл", "сироп", "мл"]):
+                return "Ренгалин раствор №1"
+            return "Ренгалин таб. №20"
 
         if "климаксан" in name_norm:
             if "таб" in name_norm:
@@ -399,17 +476,61 @@ def match_canonical(
         if re.search(r"\bдуафа", name_norm):
             return None
 
+    # Сопоставление по каталогу:
+    # 1. Точное совпадение (exact match)
     for canonical, aliases in catalog:
+        if normalize_name(canonical) == name_norm:
+            return canonical
+        for alias in aliases:
+            a_norm = normalize_name(alias)
+            if a_norm and a_norm == name_norm:
+                return canonical
+
+    # 2. Сопоставление по подстроке с выбором наиболее длинного (специфичного) синонима
+    # и защитой от конфликта лекарственных форм (капли vs таблетки)
+    best_canonical = None
+    best_len = 0
+    for canonical, aliases in catalog:
+        c_low = canonical.lower()
+        if "анаферон" in name_norm:
+            if is_anaferon_drops and ("таб" in c_low or "таблет" in c_low):
+                continue
+            if not is_anaferon_drops and any(t in name_norm for t in ["таб", "табл", "таблет"]) and ("кап" in c_low or "25мл" in c_low):
+                continue
+
+        for alias in aliases:
+            alias_norm = normalize_name(alias)
+            if not alias_norm or len(alias_norm) < 3:
+                continue
+            if alias_norm in name_norm:
+                if len(alias_norm) > best_len:
+                    best_len = len(alias_norm)
+                    best_canonical = canonical
+
+        c_norm = normalize_name(canonical)
+        if c_norm and c_norm in name_norm:
+            if len(c_norm) > best_len:
+                best_len = len(c_norm)
+                best_canonical = canonical
+
+    if best_canonical:
+        return best_canonical
+
+    # 3. Нечеткое совпадение (fuzzy match)
+    for canonical, aliases in catalog:
+        c_low = canonical.lower()
+        if "анаферон" in name_norm:
+            if is_anaferon_drops and ("таб" in c_low or "таблет" in c_low):
+                continue
+            if not is_anaferon_drops and any(t in name_norm for t in ["таб", "табл", "таблет"]) and ("кап" in c_low or "25мл" in c_low):
+                continue
         for alias in aliases:
             alias_norm = normalize_name(alias)
             if not alias_norm:
                 continue
-            if alias_norm in name_norm:
-                return canonical
             if fuzz.ratio(name_norm, alias_norm) >= 90 and name_norm[:5] == alias_norm[:5]:
                 return canonical
-        if normalize_name(canonical) in name_norm:
-            return canonical
+
     return None
 
 
@@ -420,9 +541,11 @@ def is_excluded_product(name: str, producer: Optional[str] = None) -> bool:
     norm_name = " ".join(str(name).lower().split())
     if re.search(r'(?:^|[\s\-_/(\[])(?:сдк|sdk)(?:$|[\s\-_/)\]])', norm_name):
         return True
+    if any(x in norm_name for x in ["аноферрин", "anoferrin"]):
+        return True
     if producer:
         norm_prod = " ".join(str(producer).lower().split())
-        if any(x in norm_prod for x in ["salomatlik", "kelajak", "diyor kelajak"]):
+        if any(x in norm_prod for x in ["salomatlik", "kelajak", "diyor kelajak", "саломатлик", "келажак", "диер", "диёр"]):
             return True
         if re.search(r'(?:^|[\s\-_/(\[])(?:сдк|sdk)(?:$|[\s\-_/)\]])', norm_prod):
             return True

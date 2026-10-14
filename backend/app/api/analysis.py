@@ -21,19 +21,30 @@ router = APIRouter(prefix="/analysis", tags=["analysis"])
 def compare_prices(
     date1: Optional[str] = None,
     date2: Optional[str] = None,
+    scope: Optional[str] = "republic",
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Сравнивает цены двух сводных отчетов (по умолчанию двух последних или по указанным датам)."""
+    """Сравнивает цены двух сводных отчетов (по умолчанию двух последних или по указанным датам). Поддерживает scope='republic' и scope='fergana'."""
     # 1. Авто-обнаружение, синхронизация с диском и дедупликация
     from app.api.dependencies import auto_discover_user_files
     auto_discover_user_files(db, current_user.id)
 
-    query = db.query(FileRecord).filter(
-        FileRecord.user_id == current_user.id,
-        FileRecord.file_type == "output",
-        FileRecord.filename.like("%Сводный%")
-    )
+    scope_lower = (scope or "republic").strip().lower()
+    if scope_lower == "fergana":
+        query = db.query(FileRecord).filter(
+            FileRecord.user_id == current_user.id,
+            FileRecord.file_type == "output",
+            FileRecord.filename.like("%Ферганская долина%")
+        )
+    else:
+        query = db.query(FileRecord).filter(
+            FileRecord.user_id == current_user.id,
+            FileRecord.file_type == "output",
+            FileRecord.filename.like("%Сводный%"),
+            ~FileRecord.filename.like("%Ферганская долина%"),
+            ~FileRecord.storage_path.like("%/fergana/%")
+        )
 
     if date1 and date2:
         file1 = query.filter(FileRecord.filename.like(f"%{date1}%")).first()
@@ -106,6 +117,39 @@ def compare_prices(
         try:
             wb = openpyxl.load_workbook(path, data_only=True)
             sheet = wb["СвПрайс"] if "СвПрайс" in wb.sheetnames else wb.active
+            
+            first_row_vals = [sheet.cell(row=1, column=c).value for c in range(1, min(sheet.max_column + 1, 50))]
+            first_row_str = [str(v or "").strip().lower() for v in first_row_vals]
+
+            if any("препарат" in v for v in first_row_str):
+                prep_col = next((c for c, v in enumerate(first_row_str, 1) if "препарат" in v), 1)
+                header_mapping = {}
+                for col_idx in range(1, sheet.max_column + 1):
+                    raw_title = sheet.cell(row=1, column=col_idx).value
+                    if not raw_title:
+                        continue
+                    clean_title = str(raw_title).replace(".xlsx", "").replace(".xls", "").strip()
+                    header_mapping[col_idx] = clean_title
+
+                rows_data = []
+                for r in range(2, sheet.max_row + 1):
+                    p_name = sheet.cell(row=r, column=prep_col).value
+                    if not p_name or str(p_name).strip() == "" or str(p_name).lower() == "nan":
+                        continue
+                    row_dict = {
+                        "№": r - 1,
+                        "Препарат": str(p_name).strip()
+                    }
+                    for col_idx, col_name in header_mapping.items():
+                        if col_idx == prep_col:
+                            continue
+                        val = sheet.cell(row=r, column=col_idx).value
+                        row_dict[col_name] = to_number(val) if val is not None else None
+                    rows_data.append(row_dict)
+                wb.close()
+                if rows_data:
+                    return pd.DataFrame(rows_data)
+
             rows_data = []
             for r in range(7, 25):
                 p_name = sheet.cell(row=r, column=2).value
@@ -197,6 +241,7 @@ def compare_prices(
         dynamics = []
         status_str = "stable"
         disappeared_suppliers = []
+        appeared_suppliers = []
 
         if df_prev is not None and "Препарат" in df_prev.columns:
             prev_row_match = df_prev[df_prev["Препарат"].str.strip() == drug_name]
@@ -213,10 +258,33 @@ def compare_prices(
                             dynamics.append({
                                 "supplier": supplier,
                                 "change_uzs": float(change),
-                                "change_percent": pct
+                                "change_percent": pct,
+                                "old_price": float(prev_price),
+                                "new_price": float(curr_price)
                             })
                     elif prev_price is not None and prev_price > 0 and curr_price is None:
                         disappeared_suppliers.append(supplier)
+                    elif (prev_price is None or prev_price == 0) and curr_price is not None and curr_price > 0:
+                        appeared_suppliers.append({
+                            "supplier": supplier,
+                            "price": float(curr_price)
+                        })
+            else:
+                for supplier in curr_suppliers:
+                    curr_price = to_number(row.get(supplier))
+                    if curr_price is not None and curr_price > 0:
+                        appeared_suppliers.append({
+                            "supplier": supplier,
+                            "price": float(curr_price)
+                        })
+        elif df_prev is not None:
+            for supplier in curr_suppliers:
+                curr_price = to_number(row.get(supplier))
+                if curr_price is not None and curr_price > 0:
+                    appeared_suppliers.append({
+                        "supplier": supplier,
+                        "price": float(curr_price)
+                    })
 
         deficit_parts = []
         if disappeared_suppliers:
@@ -233,9 +301,33 @@ def compare_prices(
             "status": status_str,
             "missing_suppliers": missing_suppliers,
             "disappeared_suppliers": disappeared_suppliers,
+            "appeared_suppliers": appeared_suppliers,
         }
         if deficit_parts:
             drugs_data[drug_name]["deficit_details"] = "; ".join(deficit_parts)
+
+    # Проверяем препараты, которые были в прошлом прайсе, но полностью пропали из текущего
+    if df_prev is not None and "Препарат" in df_prev.columns:
+        curr_names = {str(r["Препарат"]).strip() for _, r in df_curr.iterrows() if str(r.get("Препарат", "")).strip()}
+        for _, prev_row in df_prev.iterrows():
+            prev_name = str(prev_row.get("Препарат", "")).strip()
+            if not prev_name or prev_name == "nan" or prev_name in curr_names:
+                continue
+            prev_had = []
+            for supplier in curr_suppliers:
+                p_val = to_number(prev_row.get(supplier))
+                if p_val is not None and p_val > 0:
+                    prev_had.append(supplier)
+            if prev_had:
+                drugs_data[prev_name] = {
+                    "best_offers": [],
+                    "dynamics": [],
+                    "status": "disappeared",
+                    "deficit_details": f"Полностью пропал из прайса (был у: {', '.join(prev_had)})",
+                    "missing_suppliers": curr_suppliers,
+                    "disappeared_suppliers": prev_had,
+                    "appeared_suppliers": []
+                }
 
     return {
         "meta": {

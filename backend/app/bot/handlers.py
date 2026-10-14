@@ -15,6 +15,7 @@ from pathlib import Path
 from app.config import settings
 from app.database import SessionLocal
 from app.models import User, FileRecord, TaskRecord
+from sqlalchemy import or_, and_
 from app.tasks import run_pipeline_task
 from app.bot.keyboards import get_main_keyboard
 from app.bot.utils import generate_magic_link, get_or_create_user
@@ -195,6 +196,44 @@ async def handle_run_task_callback(callback: CallbackQuery) -> None:
         db.close()
 
 
+@router.callback_query(F.data == "collect:fergana")
+async def handle_collect_fergana_callback(callback: CallbackQuery) -> None:
+    """Запускает сбор прайсов по 17 оптовикам Ферганской долины через Scout Agent."""
+    tg_user = callback.from_user
+    if tg_user.id not in settings.allowed_telegram_ids_set:
+        await callback.answer("⛔ У вас нет доступа к этой команде.", show_alert=True)
+        return
+
+    await callback.answer("🍇 Запущен сбор прайсов Ферганской долины...")
+    sent_msg = await callback.message.answer(
+        "🍇 <b>[ФЕРГАНСКАЯ ДОЛИНА]</b> Начинаю опрос каналов 17 местных оптовиков...\n"
+        "По завершении сводный прайс будет собран и отправлен в чат."
+    )
+
+    try:
+        import json
+        url = "http://scout_agent:8080/collect_fergana"
+        payload = json.dumps({
+            "chat_id": callback.message.chat.id,
+            "message_id": sent_msg.message_id
+        }).encode("utf-8")
+        req = urllib.request.Request(url, data=payload, method="POST")
+        req.add_header("X-Internal-API-Key", settings.INTERNAL_API_KEY)
+        req.add_header("Content-Type", "application/json")
+
+        loop = asyncio.get_running_loop()
+        def _send_request():
+            with urllib.request.urlopen(req, timeout=10.0) as response:
+                return response.status, response.read().decode()
+
+        status, _ = await loop.run_in_executor(None, _send_request)
+        if status != 200:
+            await callback.message.answer("❌ Ошибка при обращении к Агенту-Сборщику.")
+    except Exception as e:
+        logger.exception(f"Exception triggering Fergana collection: {e}")
+        await callback.message.answer(f"❌ Не удалось связаться с Агентом-Сборщиком: {e}")
+
+
 @router.callback_query(F.data == "clear_files")
 async def handle_clear_files_callback(callback: CallbackQuery) -> None:
     """Удаляет все файлы пользователя с сервера и из базы данных."""
@@ -239,7 +278,8 @@ async def handle_confirm_purge_callback(callback: CallbackQuery) -> None:
     db = SessionLocal()
     try:
         from datetime import datetime
-        query = db.query(FileRecord).filter(FileRecord.user_id == user.id)
+        user_ids = [user.id] if user.id == 1 else [user.id, 1]
+        query = db.query(FileRecord).filter(FileRecord.user_id.in_(user_ids))
         
         # Фильтруем по месяцам
         month_conditions = []
@@ -253,11 +293,16 @@ async def handle_confirm_purge_callback(callback: CallbackQuery) -> None:
                         end_dt = datetime(y_num + 1, 1, 1)
                     else:
                         end_dt = datetime(y_num, m_num + 1, 1)
-                    query = query.filter(FileRecord.uploaded_at >= start_dt, FileRecord.uploaded_at < end_dt)
+                    month_conditions.append(and_(FileRecord.uploaded_at >= start_dt, FileRecord.uploaded_at < end_dt))
             except Exception:
                 pass
                 
-        files_to_delete = query.all()
+        if month_conditions:
+            query = query.filter(or_(*month_conditions))
+            files_to_delete = query.all()
+        else:
+            files_to_delete = []
+
         if not files_to_delete:
             await callback.answer("ℹ️ Файлы не найдены.")
             await callback.message.edit_text("ℹ️ Файлы за выбранный период не найдены или уже удалены.")
@@ -364,7 +409,9 @@ async def handle_bot_mention_in_group(message: Message) -> None:
         db = SessionLocal()
         try:
             from datetime import datetime
-            query = db.query(FileRecord).filter(FileRecord.user_id == user.id)
+            user_ids = [user.id] if user.id == 1 else [user.id, 1]
+            query = db.query(FileRecord).filter(FileRecord.user_id.in_(user_ids))
+            month_conditions = []
             for m_str in months:
                 try:
                     parts = m_str.split(".")
@@ -372,11 +419,16 @@ async def handle_bot_mention_in_group(message: Message) -> None:
                         m_num, y_num = int(parts[0]), int(parts[1])
                         start_dt = datetime(y_num, m_num, 1)
                         end_dt = datetime(y_num + 1, 1, 1) if m_num == 12 else datetime(y_num, m_num + 1, 1)
-                        query = query.filter(FileRecord.uploaded_at >= start_dt, FileRecord.uploaded_at < end_dt)
+                        month_conditions.append(and_(FileRecord.uploaded_at >= start_dt, FileRecord.uploaded_at < end_dt))
                 except Exception:
                     pass
                     
-            files_found = query.all()
+            if month_conditions:
+                query = query.filter(or_(*month_conditions))
+                files_found = query.all()
+            else:
+                files_found = []
+
             if not files_found:
                 await message.reply(f"ℹ️ Файлы за период {html.code(months_display)} не найдены в базе данных.")
                 return
@@ -408,15 +460,100 @@ async def handle_bot_mention_in_group(message: Message) -> None:
         finally:
             db.close()
 
-    # 2. Проверяем команду быстрой сборки из сохраненных прайсов (/just_collect, /build_svodny)
-    is_just_collect_trigger = (
+    # 2. Проверяем команды быстрой сборки из сохраненных прайсов
+    is_just_collect_fergana = (
+        low_text.startswith(("/just_collect_fergana", "/build_fergana")) or
+        "собери ферган" in low_text or
+        ("ферган" in low_text and ("только собрать" in low_text or "быстрая сборка" in low_text))
+    )
+    is_just_collect_republic = (
         low_text.startswith(("/just_collect", "/build_svodny", "/just_aggregate")) or
         "только собрать" in low_text or
         "быстрая сборка" in low_text or
         "собери из существующих" in low_text or
         "собери сводный" in low_text
     )
-    if is_just_collect_trigger:
+
+    if is_just_collect_fergana:
+        tg_user = message.from_user
+        if not tg_user or tg_user.id not in settings.allowed_telegram_ids_set:
+            logger.warning(f"User {tg_user.id if tg_user else 'unknown'} tried to trigger just_collect_fergana but is not allowed.")
+            return
+            
+        user = get_or_create_user(telegram_id=tg_user.id)
+        db = SessionLocal()
+        try:
+            target_user = user
+            input_files = db.query(FileRecord).filter(
+                FileRecord.user_id == target_user.id,
+                FileRecord.file_type == "input",
+                FileRecord.storage_path.like("%/fergana/%")
+            ).all()
+            
+            if not input_files and target_user.id != 1:
+                input_files = db.query(FileRecord).filter(
+                    FileRecord.user_id == 1,
+                    FileRecord.file_type == "input",
+                    FileRecord.storage_path.like("%/fergana/%")
+                ).all()
+                if input_files:
+                    target_user = db.query(User).filter(User.id == 1).first() or target_user
+
+            fergana_dir = settings.UPLOAD_DIR / str(target_user.id) / "fergana"
+            if not input_files and fergana_dir.exists():
+                for fpath in fergana_dir.glob("*.xls*"):
+                    if fpath.is_file() and not fpath.name.startswith("~"):
+                        from app.services.file_service import FileService
+                        clean_fn = FileService.sanitize_user_filename(fpath.name)
+                        rec = FileService.register_input_file_db(
+                            db=db,
+                            user_id=target_user.id,
+                            filename=clean_fn,
+                            file_size=fpath.stat().st_size,
+                            storage_path=fpath,
+                            read_preset=""
+                        )
+                        input_files.append(rec)
+            
+            if not input_files:
+                await message.reply(
+                    "⚠️ <b>В папке Ферганской долины нет сохраненных исходных файлов прайсов.</b>\n\n"
+                    "Используйте команду <code>/fetch_fergana</code> для скачивания или <code>/collect_fergana</code> для полного сбора с каналов."
+                )
+                return
+                
+            file_ids = [f.id for f in input_files]
+            file_names_str = ", ".join([f"<code>{f.filename}</code>" for f in input_files[:4]])
+            more_str = f" и еще {len(input_files) - 4} файлов" if len(input_files) > 4 else ""
+            
+            task_record = TaskRecord(
+                user_id=target_user.id,
+                task_type="svodny_fergana",
+                status="pending",
+                is_automated=True,
+                file_ids=file_ids,
+                progress_message="Постановка задачи в очередь..."
+            )
+            db.add(task_record)
+            db.commit()
+            db.refresh(task_record)
+            
+            run_pipeline_task.delay(task_record.id)
+            
+            await message.reply(
+                f"🍇 <b>Запущена быстрая сборка сводного прайса Ферганской долины!</b>\n\n"
+                f"📁 <b>Файлы в обработке ({len(input_files)} шт.):</b>\n{file_names_str}{more_str}\n\n"
+                f"⏱ <i>Формирую матрицу Долины (~30 сек)... Готовый результат будет отправлен сюда.</i>"
+            )
+            return
+        except Exception as e:
+            logger.exception(f"Error starting just_collect_fergana task: {e}")
+            await message.reply("❌ Ошибка при запуске быстрой сборки сводного прайса Ферганской долины.")
+            return
+        finally:
+            db.close()
+
+    elif is_just_collect_republic:
         tg_user = message.from_user
         if not tg_user or tg_user.id not in settings.allowed_telegram_ids_set:
             logger.warning(f"User {tg_user.id if tg_user else 'unknown'} tried to trigger just_collect but is not allowed.")
@@ -428,14 +565,16 @@ async def handle_bot_mention_in_group(message: Message) -> None:
             target_user = user
             input_files = db.query(FileRecord).filter(
                 FileRecord.user_id == target_user.id,
-                FileRecord.file_type == "input"
+                FileRecord.file_type == "input",
+                ~FileRecord.storage_path.like("%/fergana/%")
             ).all()
             
             if not input_files and target_user.id != 1:
                 # Если у пользователя нет своих файлов, берем загруженные файлы системного пользователя 1
                 input_files = db.query(FileRecord).filter(
                     FileRecord.user_id == 1,
-                    FileRecord.file_type == "input"
+                    FileRecord.file_type == "input",
+                    ~FileRecord.storage_path.like("%/fergana/%")
                 ).all()
                 if input_files:
                     target_user = db.query(User).filter(User.id == 1).first() or target_user
@@ -478,18 +617,34 @@ async def handle_bot_mention_in_group(message: Message) -> None:
         finally:
             db.close()
 
-    # 3. Проверяем команды скачивания прайсов (/fetch, /download_prices, /collect)
-    is_fetch_trigger = (
-        "@lightprice_aggr_bot" in low_text or 
-        "агрегатор" in low_text or 
-        "сборщик" in low_text or 
-        "сборка" in low_text or 
+    # 3. Проверяем команды скачивания и сбора прайсов через Scout
+    is_fergana_fetch = (
+        low_text.startswith(("/fetch_fergana", "/download_fergana")) or
+        "скачай ферган" in low_text or
+        "скачай прайсы ферган" in low_text
+    )
+
+    is_fergana_collect = (
+        low_text.startswith(("/fergana", "/collect_fergana")) or
+        ("ферган" in low_text and ("сбор" in low_text or "собрать" in low_text or "сводный" in low_text))
+    )
+
+    is_republic_fetch = (
+        low_text.startswith(("/fetch", "/download_prices")) or
         "скачай прайсы" in low_text or
         "скачай последние прайсы" in low_text or
-        "загрузи прайсы" in low_text or
-        low_text.startswith(("/collect", "/fetch", "/download_prices"))
+        "загрузи прайсы" in low_text
     )
-    if not is_fetch_trigger:
+
+    is_republic_collect = (
+        low_text.startswith(("/collect", "/svodny")) or
+        "сборщик" in low_text or
+        "сборка" in low_text or
+        "@lightprice_aggr_bot" in low_text or
+        "агрегатор" in low_text
+    )
+
+    if not (is_fergana_fetch or is_fergana_collect or is_republic_fetch or is_republic_collect):
         return
         
     tg_user = message.from_user
@@ -501,18 +656,17 @@ async def handle_bot_mention_in_group(message: Message) -> None:
         logger.warning(f"User {tg_user.id} ({tg_user.full_name}) tried to trigger collection but is not allowed.")
         return
         
-    is_fetch_only = (
-        low_text.startswith(("/fetch", "/download_prices")) or
-        "скачай прайсы" in low_text or
-        "скачай последние прайсы" in low_text or
-        "загрузи прайсы" in low_text
-    )
-    
-    endpoint_path = "/fetch" if is_fetch_only else "/collect"
-    
-    if is_fetch_only:
+    if is_fergana_fetch:
+        endpoint_path = "/fetch_fergana"
+        start_msg = "🍇 <b>[ФЕРГАНСКАЯ ДОЛИНА]</b> Запрос на скачивание получен. Начинаю скачивать свежие прайсы 17 местных оптовиков в папку fergana/..."
+    elif is_fergana_collect:
+        endpoint_path = "/collect_fergana"
+        start_msg = "🍇 <b>[ФЕРГАНСКАЯ ДОЛИНА]</b> Запрос на полный сбор получен. Начинаю опрос каналов 17 местных оптовиков и построение матрицы..."
+    elif is_republic_fetch:
+        endpoint_path = "/fetch"
         start_msg = "⏳ Запрос на скачивание прайс-листов получен. Начинаю скачивать свежие прайсы (100% / 25%) со всех каналов дистрибьюторов..."
     else:
+        endpoint_path = "/collect"
         start_msg = "⏳ Запрос на сбор прайс-листов получен. Начинаю опрашивать каналы дистрибьюторов..."
         
     sent_msg = await message.answer(start_msg)

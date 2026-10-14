@@ -20,13 +20,46 @@ DEFAULT_NAME_CANDIDATES = [
     "Наименование медикаментов",
     "Товары",
     "Махсулот номи",
+    "Номи",
+    "Товар номи",
+    "Препарат номи",
+    "Махсулот",
     "Номенклатура",
     "Товар",
     "Название",
     "Name",
     "Наимменование",
+    "Препарат",
+    "Позиция",
 ]
 DEFAULT_PRICE_CANDIDATES = [
+    "-4",
+    "-4%",
+    "Цена -4%",
+    "Цена-4%",
+    "Цена - 4%",
+    "-3",
+    "-3%",
+    "Цена -3%",
+    "Цена-3%",
+    "Цена - 3%",
+    "-2",
+    "-2%",
+    "Цена -2%",
+    "Цена-2%",
+    "Цена - 2%",
+    "Цена-4",
+    "Цена 4",
+    "Цена - 4",
+    "Цена -4",
+    "Цена-3",
+    "Цена 3",
+    "Цена - 3",
+    "Цена -3",
+    "Цена-2",
+    "Цена 2",
+    "Цена - 2",
+    "Цена -2",
     "Цена отпускная под 100%",
     "Цена (100%) с НДС",
     "Цена При 100 % оплате цена",
@@ -40,6 +73,7 @@ DEFAULT_PRICE_CANDIDATES = [
     "Цена с НДС",
     "Цена без НДС",
     "Цена",
+    "Цена сум",
     "Цена отпускная под 25%",
     "Цена Спец мин 1млн",
     "Тип цены При 100% Оплате (перечисление)",
@@ -56,12 +90,40 @@ DEFAULT_PRICE_CANDIDATES = [
     "Отп. Цена",
     "Price",
     "Нарх",
+    "Нархи",
+    "Сотув нархи",
+    "100% тўлов",
+    "100% тулов",
+    "Пул кўчириш",
+    "Пул кучириш",
+    "Накд",
     "Розница",
     "Опт",
+    "Цена опт.",
+    "Цена опт",
+    "Цена Опт",
+    "Цена Опт.",
+    "Стоимость",
+    "Тариф",
+    "Продажная",
+    "Продажная цена",
+    "Продажная с НДС",
+    "Цена прайс",
+    "100% цена (Узбекский сум)",
+    "100% цена",
+    "Цена (Узбекский сум)",
+    "Цена со скидкой",
+    "Отпускная цена",
+    "Отпуск.цена",
+    "Отпускная цена с НДС",
+    "Отп. цена с НДС",
+    "100%",
+    "1",
+    "1.0",
 ]
-DEFAULT_STOCK_CANDIDATES = ["Остаток", "Наличие", "Stock", "Qty", "Количество"]
-DEFAULT_PRODUCER_CANDIDATES = ["Производитель", "Бренд", "Manufacturer", "Ишлаб чикарувчи", "Произ.", "Произв.", "Произв", "Произ-ль", "Произв-ль", "Производство"]
-DEFAULT_EXPIRY_CANDIDATES = ["Срок годности", "Срок", "Годен до", "Expiry"]
+DEFAULT_STOCK_CANDIDATES = ["Остаток", "Наличие", "Stock", "Qty", "Количество", "Кол-во", "Микдор", "Миқдор", "Қолдиқ", "Колдик"]
+DEFAULT_PRODUCER_CANDIDATES = ["Производитель", "Бренд", "Manufacturer", "Ишлаб чикарувчи", "Ишлаб чиқарувчи", "Давлат", "Произ.", "Произв.", "Произв", "Произ-ль", "Произв-ль", "Производство", "Завод", "Фирма"]
+DEFAULT_EXPIRY_CANDIDATES = ["Срок годности", "Срок", "Годен до", "Expiry", "Муддати"]
 
 
 def _normalize_col_for_match(col: str) -> str:
@@ -69,6 +131,9 @@ def _normalize_col_for_match(col: str) -> str:
     if not isinstance(col, str):
         return ""
     s = " ".join(str(col).replace("\xa0", " ").split())
+    # Приводим любые варианты дефисов к стандартному дефису
+    for dash in ["–", "—", "−", "‐"]:
+        s = s.replace(dash, "-")
     while s and s[-1] in ":;":
         s = s[:-1].strip()
     return s.casefold()
@@ -210,7 +275,29 @@ def resolve_price_column_for_sheet(df: pd.DataFrame, path: Path, price_candidate
             valid_cols = [c for c in cols if "без ндс" not in str(c).lower() and "безндс" not in str(c).lower()]
             return pick_price_column(valid_cols, price_candidates)
             
+    elif "verona" in name_low or "верона" in name_low:
+        # Для Вероны парсим цены ТОЛЬКО 100%
+        for col in cols:
+            c_clean = "".join(str(col).lower().split())
+            if any(k in c_clean for k in ["100%", "100", "при100%", "предоплата100%", "цена100%"]):
+                return col
+        return pick_price_column(cols, price_candidates)
+
+    elif "azzam" in name_low or "аззам" in name_low:
+        # Для Аззам парсим цены БЕЗ 100%
+        non_100_cols = [c for c in cols if not any(k in "".join(str(c).lower().split()) for k in ["100%", "100"])]
+        if non_100_cols:
+            return pick_price_column(non_100_cols, price_candidates)
+        return pick_price_column(cols, price_candidates)
+
     elif "luxe" in name_low or "люкс" in name_low:
+        return pick_price_column(cols, price_candidates)
+
+    elif "khoji" in name_low or "хожи" in name_low:
+        for col in cols:
+            c_clean = "".join(str(col).lower().split())
+            if any(k in c_clean for k in ["ценасндс", "цена", "нарх"]):
+                return col
         return pick_price_column(cols, price_candidates)
         
     elif "biotek" in name_low or "биотек" in name_low:
@@ -273,6 +360,16 @@ def resolve_price_column_for_sheet(df: pd.DataFrame, path: Path, price_candidate
 
 
 def _excel_engine_for(path: Path) -> str:
+    """Определяет движок чтения Excel по сигнатуре (magic bytes) файла."""
+    try:
+        with open(path, "rb") as fp:
+            magic = fp.read(8)
+        if magic.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+            return "xlrd"
+        if magic.startswith(b"PK\x03\x04"):
+            return "openpyxl"
+    except Exception:
+        pass
     return "openpyxl" if path.suffix.lower() == ".xlsx" else "xlrd"
 
 
@@ -282,15 +379,16 @@ def _grand_farm_header_row(
     price_candidates: List[str],
 ) -> Optional[int]:
     """
-    В прайсах «Гранд Фарм» заголовок основной таблицы ищется от 1 до 5000 строки.
+    В прайсах «Гранд Фарм» заголовок основной таблицы ищется в пределах 1..10000 строк.
     """
     price_cands = {_normalize_col_for_match(p) for p in price_candidates}
+    price_cands.update({"отпускная цена с ндс", "отпускная цена", "отпуск.цена с ндс", "отп. цена с ндс", "100%", "1", "1.0", "базовая цена"})
     name_cands = {_normalize_col_for_match(n) for n in name_candidates}
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     try:
         ws = wb.active
         for excel_row_1based, row in enumerate(
-            ws.iter_rows(min_row=1, max_row=5000, values_only=True),
+            ws.iter_rows(min_row=1, max_row=10000, values_only=True),
             start=1,
         ):
             normed: set = set()
@@ -380,7 +478,7 @@ def read_price_table(
             pass
 
     use_khoji = read_preset == "khoji_akbar" or (
-        read_preset is None and "Хожи Акбар Фарм" in path.stem
+        read_preset is None and ("Хожи Акбар" in path.stem or "khoji" in path.stem.lower())
     )
     use_grand = read_preset == "grand_farm" or (
         read_preset is None 
@@ -389,16 +487,24 @@ def read_price_table(
     )
 
     if use_khoji:
-        try:
-            df = pd.read_excel(path, engine=engine, header=11)
-        except PermissionError:
-            out_dir = path.parent / "output" / "_tmp_read"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            read_path = out_dir / path.name
-            shutil.copy2(path, read_path)
-            df = pd.read_excel(read_path, engine=engine, header=11)
-        df.columns = [_clean_col(c) for c in df.columns]
-        return df
+        for try_hdr in [17, 11, 12, 13, 14, 15, 16, 18, 19, 20, 10, 9, 8, 7, 0, 1, 2, 3]:
+            try:
+                try:
+                    df = pd.read_excel(path, engine=engine, header=try_hdr)
+                except PermissionError:
+                    out_dir = path.parent / "output" / "_tmp_read"
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    read_path = out_dir / path.name
+                    shutil.copy2(path, read_path)
+                    df = pd.read_excel(read_path, engine=engine, header=try_hdr)
+                df.columns = [_clean_col(c) for c in df.columns]
+                cols_norm = [_normalize_col_for_match(c) for c in df.columns]
+                has_n = any("товар" in c or "наименование" in c or "препарат" in c for c in cols_norm)
+                has_p = any("цена" in c or "нарх" in c or "сумма" in c for c in cols_norm)
+                if has_n and has_p:
+                    return df
+            except Exception:
+                continue
 
     if use_grand:
         def _read_grand(headers: int) -> pd.DataFrame:
@@ -420,8 +526,9 @@ def read_price_table(
             shutil.copy2(path, read_path)
             df = _read_grand(hdr)
         df.columns = [_clean_col(c) for c in df.columns]
+        grand_price_cands = list(price_candidates) + ["Отпускная цена с НДС", "Отпускная цена", "Отп. цена с НДС", "100%", "1", "1.0"]
         if pick_column(list(df.columns), name_candidates) and pick_price_column(
-            list(df.columns), price_candidates
+            list(df.columns), grand_price_cands
         ):
             return df
         try:
@@ -432,7 +539,7 @@ def read_price_table(
             df = pd.read_excel(read_path, engine=engine, header=hdr2)
             df.columns = [_clean_col(c) for c in df.columns]
             if pick_column(list(df.columns), name_candidates) and pick_price_column(
-                list(df.columns), price_candidates
+                list(df.columns), grand_price_cands
             ):
                 return df
 
@@ -451,12 +558,41 @@ def read_price_table(
     try:
         xl = pd.ExcelFile(read_path, engine=engine)
         sheets = xl.sheet_names
-    except Exception:
-        sheets = [0]
+    except Exception as e:
+        fallback_engine = "xlrd" if engine == "openpyxl" else "openpyxl"
+        try:
+            xl = pd.ExcelFile(read_path, engine=fallback_engine)
+            sheets = xl.sheet_names
+            engine = fallback_engine
+        except Exception:
+            sheets = [0]
 
     max_scan = 600
     price_cands = [_normalize_col_for_match(p) for p in price_candidates]
     name_cands = [_normalize_col_for_match(n) for n in name_candidates]
+
+    # Ensure custom rules for this file/distributor are included in header candidates
+    try:
+        rules = load_distributor_rules()
+        for r_k, r_v in rules.items():
+            if r_k.lower() in str(read_path).lower() or r_k.lower() in str(read_path.name).lower():
+                if r_v.get("p100_col"):
+                    norm_c = _normalize_col_for_match(str(r_v["p100_col"]))
+                    if norm_c and norm_c not in price_cands:
+                        price_cands.append(norm_c)
+                if r_v.get("p25_col"):
+                    norm_c = _normalize_col_for_match(str(r_v["p25_col"]))
+                    if norm_c and norm_c not in price_cands:
+                        price_cands.append(norm_c)
+                if r_v.get("name_col"):
+                    norm_c = _normalize_col_for_match(str(r_v["name_col"]))
+                    if norm_c and norm_c not in name_cands:
+                        name_cands.append(norm_c)
+    except Exception:
+        pass
+
+    price_cands_spaceless = {p.replace(" ", "") for p in price_cands if p}
+    name_cands_spaceless = {n.replace(" ", "") for n in name_cands if n}
 
     errors = []
     for sheet in sheets:
@@ -464,7 +600,8 @@ def read_price_table(
             df0 = pd.read_excel(read_path, engine=engine, sheet_name=sheet, header=0)
             df0.columns = _make_columns_unique(df0.columns)
             cols0 = [_normalize_col_for_match(c) for c in df0.columns]
-            if any(p in cols0 for p in price_cands) and any(n in cols0 for n in name_cands):
+            cols0_spaceless = {c.replace(" ", "") for c in cols0 if c}
+            if (any(p in cols0 for p in price_cands) or bool(cols0_spaceless & price_cands_spaceless)) and (any(n in cols0 for n in name_cands) or bool(cols0_spaceless & name_cands_spaceless)):
                 return df0
         except Exception as e:
             errors.append(f"Sheet '{sheet}' fast path error: {e}")
@@ -475,8 +612,9 @@ def read_price_table(
                 for r_idx in range(len(df_scan)):
                     row_series = df_scan.iloc[r_idx]
                     row_vals = [_normalize_col_for_match(str(val)) for val in row_series if pd.notna(val)]
-                    has_price = any(p in row_vals for p in price_cands)
-                    has_name = any(n in row_vals for n in name_cands)
+                    row_spaceless = {v.replace(" ", "") for v in row_vals if v}
+                    has_price = any(p in row_vals for p in price_cands) or bool(row_spaceless & price_cands_spaceless)
+                    has_name = any(n in row_vals for n in name_cands) or bool(row_spaceless & name_cands_spaceless)
                     if has_price and has_name:
                         df = pd.read_excel(read_path, engine=engine, sheet_name=sheet, header=r_idx)
                         df.columns = _make_columns_unique(df.columns)

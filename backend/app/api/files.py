@@ -37,6 +37,7 @@ def get_files(
 async def upload_file(
     file: UploadFile = File(...),
     read_preset: str = Form(""),
+    subfolder: str = Form(""),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -46,9 +47,14 @@ async def upload_file(
         raise HTTPException(status_code=400, detail="Разрешены только файлы Excel (.xlsx, .xls)")
 
     from app.services.file_service import FileService
+    import re
 
     clean_filename = FileService.sanitize_user_filename(file.filename)
     user_upload_dir = settings.UPLOAD_DIR / str(current_user.id)
+    if subfolder and subfolder.strip():
+        clean_sub = re.sub(r"[^\w-]", "", subfolder.strip())
+        if clean_sub:
+            user_upload_dir = user_upload_dir / clean_sub
     user_upload_dir.mkdir(parents=True, exist_ok=True)
     storage_path = user_upload_dir / clean_filename
 

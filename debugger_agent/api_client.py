@@ -3,7 +3,7 @@ import json
 import logging
 import asyncio
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import httpx
 
 import config
@@ -98,3 +98,47 @@ async def wait_for_task_completion(task_id: int, timeout_sec: int = 180) -> bool
             logger.warning(f"Error checking task status: {e}")
         await asyncio.sleep(2)
     return False
+
+
+async def get_recent_tasks(limit: int = 10) -> List[Dict[str, Any]]:
+    """Retrieves recent backend tasks."""
+    headers = {
+        "X-Internal-API-Key": config.INTERNAL_API_KEY,
+        "X-Target-User-ID": "1"
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{config.BACKEND_URL}/api/tasks",
+                headers=headers
+            )
+            if resp.status_code == 200:
+                tasks = resp.json()
+                return tasks[:limit]
+    except Exception as e:
+        logger.error(f"Error fetching recent tasks: {e}")
+    return []
+
+
+async def get_backend_files(filename_query: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Retrieves registered file records from backend database."""
+    headers = {
+        "X-Internal-API-Key": config.INTERNAL_API_KEY,
+        "X-Target-User-ID": "1"
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{config.BACKEND_URL}/api/files",
+                headers=headers
+            )
+            if resp.status_code == 200:
+                files = resp.json()
+                if filename_query:
+                    q_low = filename_query.lower()
+                    return [f for f in files if q_low in f.get("filename", "").lower()]
+                return files
+    except Exception as e:
+        logger.error(f"Error fetching backend files: {e}")
+    return []
+

@@ -52,15 +52,32 @@ def _read_excel_file(path: Path) -> pd.DataFrame:
         df_raw = pd.read_excel(path, sheet_name=0, header=None, engine=engine)
         
         # Find header row
-        KEYWORDS = ["наименование", "название", "товар", "номенклатура", "препарат", "медикамент"]
+        NAME_KEYWORDS = ["наименование", "название", "товар", "номенклатура", "препарат"]
+        PRICE_KEYWORDS = ["цена", "прайс", "сумма", "стоимость", "100%", "25%"]
+        BAD_PHRASES = ["уважаем", "почтен", "партнер", "внимани", "выражает", "по всем вопросам"]
+
         hdr_idx = None
+        fallback_hdr = None
         for r_i in range(min(12000, len(df_raw))):
             row_vals = [str(x).lower().strip() for x in df_raw.iloc[r_i] if pd.notna(x)]
-            if any(any(k in x for k in KEYWORDS) for x in row_vals):
+            if len(row_vals) < 2:
+                continue
+            has_name = any(
+                any(k in x and len(x) < 50 and not any(bad in x for bad in BAD_PHRASES) for k in NAME_KEYWORDS)
+                for x in row_vals
+            )
+            has_price = any(
+                any(k in x and len(x) < 50 for k in PRICE_KEYWORDS)
+                for x in row_vals
+            )
+            if has_name and has_price:
                 hdr_idx = r_i
                 break
+            elif has_name and fallback_hdr is None:
+                fallback_hdr = r_i
+
         if hdr_idx is None:
-            hdr_idx = 0
+            hdr_idx = fallback_hdr if fallback_hdr is not None else 0
                 
         df = pd.read_excel(path, sheet_name=0, header=hdr_idx, engine=engine)
         seen = {}
@@ -102,11 +119,32 @@ def find_latest_svodny(output_dir: Path, scope: str = "republic") -> Optional[Pa
     return candidates[0]
 
 
-def match_raw_to_template_product(raw_name: str, template_products: List[Tuple[int, str]]) -> Optional[Tuple[int, str]]:
+def is_excluded_raw_product(name: str, producer: Optional[str] = None) -> bool:
+    """Checks whether a raw product item should be excluded (SDK copies, generics, Salomatlik, etc.)."""
+    if not name:
+        return False
+    norm_name = " ".join(str(name).lower().split())
+    if re.search(r'(?:^|[\s\-_/(\[])(?:сдк|sdk)(?:$|[\s\-_/)\]])', norm_name):
+        return True
+    if any(x in norm_name for x in ["аноферрин", "anoferrin", "salomatlik", "kelajak"]):
+        return True
+    if producer:
+        norm_prod = " ".join(str(producer).lower().split())
+        if any(x in norm_prod for x in ["salomatlik", "kelajak", "diyor kelajak", "саломатлик", "келажак", "диер", "диёр"]):
+            return True
+        if re.search(r'(?:^|[\s\-_/(\[])(?:сдк|sdk)(?:$|[\s\-_/)\]])', norm_prod):
+            return True
+    return False
+
+
+def match_raw_to_template_product(raw_name: str, template_products: List[Tuple[int, str]], producer: Optional[str] = None) -> Optional[Tuple[int, str]]:
     """
     Matches raw supplier product name to the exact template product in the consolidated sheet.
     Follows canonical pharmaceutical form matching rules.
     """
+    if is_excluded_raw_product(raw_name, producer):
+        return None
+
     raw_norm = " ".join(str(raw_name).lower().split())
 
     # Exclude SDK / generic copies / Salomatlik / Kelajak
@@ -363,13 +401,21 @@ def audit_svodny_fergana(svodny_path: Path, upload_dir: Path) -> AuditReport:
             if valid_cnt >= 3:
                 numeric_cols.append(c)
 
+        producer_col = None
+        for c in df_raw.columns:
+            c_low = str(c).lower()
+            if any(k in c_low for k in ["производ", "произ.", "произв", "бренд", "завод", "фирма", "manufacturer"]):
+                producer_col = c
+                break
+
         materia_rows = []
         for r_i in range(len(df_raw)):
             raw_row = df_raw.iloc[r_i]
             n_val = str(raw_row.get(name_col, "")).strip()
             if not n_val or n_val.lower() == "nan":
                 continue
-            matched_tpl = match_raw_to_template_product(n_val, template_products)
+            prod_val = str(raw_row.get(producer_col, "")).strip() if producer_col else ""
+            matched_tpl = match_raw_to_template_product(n_val, template_products, producer=prod_val)
             if matched_tpl:
                 for c in numeric_cols:
                     v = raw_row.get(c)
@@ -525,6 +571,14 @@ def audit_svodny_price(svodny_path: Path, upload_dir: Path, scope: str = "republ
                 if valid_cnt >= 3:
                     numeric_cols.append(c)
 
+            # Find producer column if present
+            producer_col = None
+            for c in df_raw.columns:
+                c_low = str(c).lower()
+                if any(k in c_low for k in ["производ", "произ.", "произв", "бренд", "завод", "фирма", "manufacturer"]):
+                    producer_col = c
+                    break
+
             # Find Materia Medica rows in the raw file using canonical matching
             materia_rows = []
             for r_i in range(len(df_raw)):
@@ -533,7 +587,8 @@ def audit_svodny_price(svodny_path: Path, upload_dir: Path, scope: str = "republ
                 if not n_val or n_val.lower() == "nan":
                     continue
                 
-                matched_tpl = match_raw_to_template_product(n_val, template_products)
+                prod_val = str(raw_row.get(producer_col, "")).strip() if producer_col else ""
+                matched_tpl = match_raw_to_template_product(n_val, template_products, producer=prod_val)
                 if matched_tpl:
                     # Verify this row has a positive numeric price
                     has_price = False
@@ -611,20 +666,38 @@ def audit_svodny_price(svodny_path: Path, upload_dir: Path, scope: str = "republ
                         if v25 == v100:
                             identical_pairs += 1
                 if matching_pairs >= 3 and matching_pairs == identical_pairs:
-                    discrepancies.append(Discrepancy(
-                        distributor_key=dist_key,
-                        distributor_label=dist_label,
-                        raw_filename=raw_path.name,
-                        raw_filepath=raw_path,
-                        issue_type="identical_prices_anomaly",
-                        description=f"Дистрибьютор {dist_label}: цены 25% и 100% абсолютно одинаковы для всех {matching_pairs} позиций (ошибочное дублирование одной колонки в обе ячейки).",
-                        affected_products=[p for _, p in template_products if sheet_prices_25.get(p) is not None],
-                        raw_sample_data={
-                            "columns": list(df_raw.columns),
-                            "numeric_price_cols": numeric_cols,
-                            "sample_row": materia_rows[0][0].to_dict() if materia_rows else {}
-                        }
-                    ))
+                    # Check whether the raw source data actually provides different discount prices
+                    has_real_diff = False
+                    if len(numeric_cols) > 1:
+                        for m_row, _, _, _ in materia_rows:
+                            m_prices = []
+                            for nc in numeric_cols:
+                                v = m_row.get(nc)
+                                try:
+                                    if pd.notna(v) and float(v) > 500:
+                                        m_prices.append(float(v))
+                                except (ValueError, TypeError):
+                                    pass
+                            if len(m_prices) > 1 and max(m_prices) != min(m_prices):
+                                has_real_diff = True
+                                break
+
+                    # Only flag an anomaly if the raw supplier file actually contained differing prices that were lost
+                    if has_real_diff:
+                        discrepancies.append(Discrepancy(
+                            distributor_key=dist_key,
+                            distributor_label=dist_label,
+                            raw_filename=raw_path.name,
+                            raw_filepath=raw_path,
+                            issue_type="identical_prices_anomaly",
+                            description=f"Дистрибьютор {dist_label}: цены 25% и 100% абсолютно одинаковы для всех {matching_pairs} позиций (ошибочное дублирование одной колонки в обе ячейки).",
+                            affected_products=[p for _, p in template_products if sheet_prices_25.get(p) is not None],
+                            raw_sample_data={
+                                "columns": list(df_raw.columns),
+                                "numeric_price_cols": numeric_cols,
+                                "sample_row": materia_rows[0][0].to_dict() if materia_rows else {}
+                            }
+                        ))
 
             # Check 2: Entirely missing distributor
             all_25_none = all(sheet_prices_25.get(p) is None for _, p in template_products)

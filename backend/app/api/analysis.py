@@ -35,7 +35,8 @@ def compare_prices(
         query = db.query(FileRecord).filter(
             FileRecord.user_id == current_user.id,
             FileRecord.file_type == "output",
-            FileRecord.filename.like("%Ферганская долина%")
+            FileRecord.filename.like("%Ферганская долина%"),
+            ~FileRecord.filename.ilike("%вертикаль%")
         )
     else:
         query = db.query(FileRecord).filter(
@@ -43,6 +44,7 @@ def compare_prices(
             FileRecord.file_type == "output",
             FileRecord.filename.like("%Сводный%"),
             ~FileRecord.filename.like("%Ферганская долина%"),
+            ~FileRecord.filename.ilike("%вертикаль%"),
             ~FileRecord.storage_path.like("%/fergana/%")
         )
 

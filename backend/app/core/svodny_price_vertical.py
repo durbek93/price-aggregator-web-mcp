@@ -57,6 +57,7 @@ def format_summary_sheet(sheet):
     _BASE_FORMATTER(sheet)
     # Для новой структуры: оптовики в A-колонке, препараты в шапке B..N.
     sheet.row_dimensions[1].height = 38
+    sheet.freeze_panes = "B2"
 
 
 def main() -> None:

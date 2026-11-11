@@ -2,13 +2,21 @@
 import os
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 import google.generativeai as genai
 
 import config
 from auditor import _read_excel_file, find_latest_svodny, audit_svodny_price, DISTRIBUTOR_MAP
-from api_client import get_distributor_rules, save_distributor_rule, trigger_rerun_pipeline, wait_for_task_completion
+from api_client import (
+    get_distributor_rules,
+    save_distributor_rule,
+    trigger_rerun_pipeline,
+    wait_for_task_completion,
+    get_recent_tasks,
+    get_backend_files,
+)
 
 logger = logging.getLogger("debugger_agent.dialog")
 
@@ -16,22 +24,77 @@ if config.GEMINI_API_KEY:
     genai.configure(api_key=config.GEMINI_API_KEY)
 
 
-def get_available_raw_files() -> List[str]:
-    """Returns list of relative file names in upload directory."""
+def get_available_raw_files() -> List[Dict[str, Any]]:
+    """Returns list of active raw files in upload directory with metadata."""
     if not config.UPLOAD_DIR.exists():
         return []
     res = []
     for p in config.UPLOAD_DIR.glob("**/*.*"):
         if p.suffix.lower() in [".xlsx", ".xls"] and not p.name.startswith("~$") and "history" not in p.parts:
-            res.append(p.name)
-    return sorted(list(set(res)))
+            try:
+                stat = p.stat()
+                mtime_str = datetime.fromtimestamp(stat.st_mtime).strftime("%d.%m.%Y %H:%M:%S")
+                res.append({
+                    "filename": p.name,
+                    "size_kb": round(stat.st_size / 1024, 1),
+                    "last_downloaded": mtime_str
+                })
+            except Exception:
+                res.append({"filename": p.name})
+    res.sort(key=lambda x: str(x.get("filename", "")).lower())
+    return res
+
+
+def get_files_status_summary(query: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Returns detailed status and metadata for all raw supplier files and their history."""
+    if not config.UPLOAD_DIR.exists():
+        return []
+    
+    q_low = query.lower().strip() if query else ""
+    summary = []
+    for p in config.UPLOAD_DIR.glob("**/*.*"):
+        if p.suffix.lower() not in [".xlsx", ".xls"] or p.name.startswith("~$") or "history" in p.parts:
+            continue
+        if q_low and q_low not in p.name.lower():
+            continue
+
+        try:
+            stat = p.stat()
+            mtime_str = datetime.fromtimestamp(stat.st_mtime).strftime("%d.%m.%Y %H:%M:%S")
+            size_kb = round(stat.st_size / 1024, 1)
+
+            # Check history folder for previous versions
+            stem = p.stem
+            history_matches = []
+            for hp in config.UPLOAD_DIR.glob(f"**/history/{stem}_*.*"):
+                if hp.is_file():
+                    h_stat = hp.stat()
+                    h_time = datetime.fromtimestamp(h_stat.st_mtime).strftime("%d.%m.%Y %H:%M:%S")
+                    history_matches.append({
+                        "filename": hp.name,
+                        "downloaded_at": h_time,
+                        "size_kb": round(h_stat.st_size / 1024, 1)
+                    })
+            history_matches.sort(key=lambda x: x["downloaded_at"], reverse=True)
+
+            summary.append({
+                "filename": p.name,
+                "last_downloaded": mtime_str,
+                "size_kb": size_kb,
+                "history_versions_count": len(history_matches),
+                "recent_history": history_matches[:3]
+            })
+        except Exception as e:
+            logger.warning(f"Error reading file status for {p}: {e}")
+
+    summary.sort(key=lambda x: str(x.get("filename", "")).lower())
+    return summary
 
 
 def inspect_raw_file(filename: str, max_rows: int = 5) -> Dict[str, Any]:
-    """Inspects raw Excel file and returns columns and sample rows."""
+    """Inspects raw Excel file and returns metadata, columns, and sample rows."""
     raw_files = list(config.UPLOAD_DIR.glob(f"**/{filename}"))
     if not raw_files:
-        # Search by substring
         fn_low = filename.lower()
         candidates = [p for p in config.UPLOAD_DIR.glob("**/*.*") if fn_low in p.name.lower() and p.suffix.lower() in [".xlsx", ".xls"]]
         if candidates:
@@ -40,9 +103,41 @@ def inspect_raw_file(filename: str, max_rows: int = 5) -> Dict[str, Any]:
         return {"error": f"Файл '{filename}' не найден в папке загрузок."}
 
     path = raw_files[0]
+    try:
+        stat = path.stat()
+        last_downloaded = datetime.fromtimestamp(stat.st_mtime).strftime("%d.%m.%Y %H:%M:%S")
+        file_size_kb = round(stat.st_size / 1024, 1)
+    except Exception:
+        last_downloaded = "не определена"
+        file_size_kb = 0
+
+    # History versions
+    stem = path.stem
+    history_matches = []
+    for hp in config.UPLOAD_DIR.glob(f"**/history/{stem}_*.*"):
+        if hp.is_file():
+            try:
+                h_stat = hp.stat()
+                h_time = datetime.fromtimestamp(h_stat.st_mtime).strftime("%d.%m.%Y %H:%M:%S")
+                history_matches.append({
+                    "filename": hp.name,
+                    "downloaded_at": h_time,
+                    "size_kb": round(h_stat.st_size / 1024, 1)
+                })
+            except Exception:
+                pass
+    history_matches.sort(key=lambda x: x["downloaded_at"], reverse=True)
+
     df = _read_excel_file(path)
     if df.empty:
-        return {"error": f"Не удалось прочитать файл '{path.name}' (пустая таблица)."}
+        return {
+            "filename": path.name,
+            "last_downloaded": last_downloaded,
+            "file_size_kb": file_size_kb,
+            "history_count": len(history_matches),
+            "recent_history": history_matches[:5],
+            "error": f"Не удалось прочитать таблицу файла '{path.name}' (пустая таблица)."
+        }
 
     cols = list(df.columns)
     sample_rows = []
@@ -63,6 +158,10 @@ def inspect_raw_file(filename: str, max_rows: int = 5) -> Dict[str, Any]:
 
     return {
         "filename": path.name,
+        "last_downloaded": last_downloaded,
+        "file_size_kb": file_size_kb,
+        "history_count": len(history_matches),
+        "recent_history": history_matches[:5],
         "total_rows": len(df),
         "columns": cols,
         "numeric_price_columns": numeric_cols,
@@ -102,12 +201,19 @@ async def execute_save_and_rebuild(distributor_key: str, name_col: str, p25_col:
     }
 
 
-SYSTEM_PROMPT = """Ты — интеллектуальный Агент-Аудитор и Отладчик системы сводного фармацевтического прайса.
-Ты общаешься с администраторами и аналитиками в Telegram. Твоя задача:
-1. Понятно и дружелюбно объяснять, что происходит с прайс-листами дистрибьюторов (Гранд Фарм, Мерос, Биотек Фарм, Фарм Люкс, Зента, Аэро и др.) и препаратами «Материа Медика».
-2. Если пользователь просит тебя проверить файл или объяснить, почему в своднике что-то не заполнено — заглядывай в структуру файлов и аргументированно отвечай.
-3. Если пользователь даёт прямое указание настроить колонку (например: "возьми колонку 'Цена' как 100% со скидкой и пересобери") — выполни это действие через инструмент save_and_rebuild.
-4. Отвечай кратко, чётко, структурированно, профессионально, используя HTML-теги для Telegram (<b>жирный</b>, <code>код</code>, <i>курсив</i>).
+SYSTEM_PROMPT = """Ты — Главный Системный Аудитор и Отладчик экосистемы фармацевтического прайс-агрегатора (Price Aggregator MCP).
+Ты работаешь в защищенном изолированном окружении проекта и обладаешь ПОЛНЫМИ И БЕЗГРАНИЧНЫМИ ПРАВАМИ АДМИНИСТРАТОРА внутри этого проекта:
+
+1. ТЫ ОБЛАДАЕШЬ АБСОЛЮТНЫМ ДОСТУПОМ ко всем файлам дистрибьюторов в папке uploads, их метаданным, точным датам и времени скачивания/модификации, размерам, полной истории предыдущих скачиваний в папке history, колонкам, строкам, ценам, правилам сопоставления и фоновым задачам бэкенда.
+2. ТЫ НИКОГДА НЕ ДОЛЖЕН говорить пользователю «у меня нет доступа к этим данным» или «мои функции ограничены». Все данные проекта тебе доступны через твои инструменты:
+   - `inspect_distributor_file` — детальная инспекция файла: дата и время скачивания, размер, история выгрузок, колонки и строки с ценами;
+   - `get_files_status` — сводка по файлам дистрибьюторов: точные даты скачивания, свежесть, размеры и количество архивных версий;
+   - `get_system_tasks_status` — статус последних задач фонового сбора прайсов (Scout), генерации сводных матриц и ошибок;
+   - `save_and_rebuild_svodny` — изменение правил сопоставления колонок и пересборка сводного прайса.
+3. Если пользователь спрашивает, когда был скачан файл (например: «а когда был скачан этот прайс?», «откуда цены Фарма Чойза?»), откуда берутся цены, какие файлы загружены, статус фоновых задач сбора или сборки прайса — ВСЕГДА вызывай свои инструменты (`inspect_distributor_file`, `get_files_status`, `get_system_tasks_status`) и давай точный, развернутый и конкретный ответ с точной датой, временем и фактами.
+4. Если пользователь просит настроить колонки или пересобрать прайс — выполняй действие через `save_and_rebuild_svodny`.
+5. Отвечай профессионально, четко, структурированно, используя HTML-теги для Telegram (<b>жирный</b>, <code>код</code>, <i>курсив</i>).
+6. Твоя зона ответственности и абсолютных полномочий — целиком и полностью данный проект агрегации цен.
 """
 
 
@@ -128,7 +234,7 @@ async def answer_user_query(
 Текущий контекст системы:
 - Последний сводный прайс: {latest_sv.name if latest_sv else 'не найден'}
 - Сохраненные правила дистрибьюторов: {json.dumps(rules, ensure_ascii=False)}
-- Доступные файлы дистрибьюторов в uploads: {raw_files}
+- Доступные активные файлы дистрибьюторов в uploads (с датами скачивания): {json.dumps(raw_files, ensure_ascii=False)}
 - Известные ключи дистрибьюторов: {list(DISTRIBUTOR_MAP.keys())}
 """
     if replied_message_text:
@@ -140,13 +246,33 @@ async def answer_user_query(
             function_declarations=[
                 genai.protos.FunctionDeclaration(
                     name="inspect_distributor_file",
-                    description="Открывает и инспектирует структуру реального Excel-файла дистрибьютора из папки uploads (шапка, список колонок, числовые колонки цен, примеры первых строк).",
+                    description="Открывает и инспектирует конкретный Excel-файл дистрибьютора из папки uploads (точная дата и время скачивания, размер файла, история предыдущих скачиваний, шапка, список колонок, числовые колонки цен, примеры первых строк).",
                     parameters=genai.protos.Schema(
                         type=genai.protos.Type.OBJECT,
                         properties={
-                            "filename": genai.protos.Schema(type=genai.protos.Type.STRING, description="Имя файла дистрибьютора (например 'BIOTEK FARM.xls' или 'MEROS PHARM.xlsx')")
+                            "filename": genai.protos.Schema(type=genai.protos.Type.STRING, description="Имя файла дистрибьютора (например 'Pharma Choice.xlsx', 'BIOTEK FARM.xls' или 'MEROS PHARM.xlsx')")
                         },
                         required=["filename"]
+                    )
+                ),
+                genai.protos.FunctionDeclaration(
+                    name="get_files_status",
+                    description="Возвращает сводку по всем файлам прайс-листов дистрибьюторов в системе: имя файла, точные дата и время скачивания, размер в КБ, количество версий в истории.",
+                    parameters=genai.protos.Schema(
+                        type=genai.protos.Type.OBJECT,
+                        properties={
+                            "query": genai.protos.Schema(type=genai.protos.Type.STRING, description="Опциональное имя или часть имени дистрибьютора/файла для фильтрации (например 'pharma' или 'biotek')")
+                        }
+                    )
+                ),
+                genai.protos.FunctionDeclaration(
+                    name="get_system_tasks_status",
+                    description="Возвращает статус последних задач бэкенда (сбор прайсов скаутом, пересборка сводного прайса, их статус, результат, время запуска и завершения).",
+                    parameters=genai.protos.Schema(
+                        type=genai.protos.Type.OBJECT,
+                        properties={
+                            "limit": genai.protos.Schema(type=genai.protos.Type.INTEGER, description="Количество последних задач (по умолчанию 5)")
+                        }
                     )
                 ),
                 genai.protos.FunctionDeclaration(
@@ -202,6 +328,24 @@ async def answer_user_query(
                 if name == "inspect_distributor_file":
                     fn = args.get("filename", "")
                     data = inspect_raw_file(fn)
+                    tool_responses.append(genai.protos.Part(
+                        function_response=genai.protos.FunctionResponse(
+                            name=name,
+                            response={"result": data}
+                        )
+                    ))
+                elif name == "get_files_status":
+                    q = args.get("query")
+                    data = get_files_status_summary(q)
+                    tool_responses.append(genai.protos.Part(
+                        function_response=genai.protos.FunctionResponse(
+                            name=name,
+                            response={"result": data}
+                        )
+                    ))
+                elif name == "get_system_tasks_status":
+                    lim = int(args.get("limit", 5))
+                    data = await get_recent_tasks(lim)
                     tool_responses.append(genai.protos.Part(
                         function_response=genai.protos.FunctionResponse(
                             name=name,
